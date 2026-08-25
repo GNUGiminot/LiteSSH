@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --accent: 59 130 246;
+  --accent-hover: 37 99 235;
+  --surface-0: 245 246 248;
+  --surface-1: 255 255 255;
+  --surface-2: 235 237 240;
+  --surface-3: 222 225 230;
+  --content-1: 23 27 33;
+  --content-2: 75 85 99;
+  --content-3: 148 155 165;
+}
+
+.dark {
+  --surface-0: 13 17 23;
+  --surface-1: 22 27 34;
+  --surface-2: 33 38 45;
+  --surface-3: 48 54 61;
+  --content-1: 230 237 243;
+  --content-2: 139 148 158;
+  --content-3: 88 96 105;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-family:
+    'Inter',
+    -apple-system,
+    'Segoe UI',
+    system-ui,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  @apply bg-surface-0 text-content-1;
+  font-size: 13px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--surface-3));
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--content-3));
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* Кастомный титлбар: шапка тянет окно, интерактивные элементы — нет */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-drag button,
+.app-drag input,
+.app-drag select,
+.app-drag a,
+.app-drag [role='button'] {
+  -webkit-app-region: no-drag;
+}
+
+/* Плавные появления (200мс) */
+@keyframes litessh-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* Только opacity — безопасно для центрированных через transform диалогов */
+@keyframes litessh-opacity-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-in-fade {
+  animation: litessh-fade-in 0.2s ease-out;
+}
+.animate-in-overlay {
+  animation: litessh-opacity-in 0.18s ease-out;
+}
+
+/* Radix-диалоги: мягкое появление контента и затемнения при открытии */
+[role='dialog'][data-state='open'] {
+  animation: litessh-opacity-in 0.18s ease-out;
+}
+
+/* Карточка подключения: блик, бегущий по полосе прогресса, пока идёт попытка */
+@keyframes litessh-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.connect-bar-live {
+  position: relative;
+  overflow: hidden;
+}
+.connect-bar-live::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.55), transparent);
+  animation: litessh-sheen 1.1s ease-in-out infinite;
+}
+
+/* Наведение на строки файлов и кнопки — плавный переход цвета */
+button {
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}

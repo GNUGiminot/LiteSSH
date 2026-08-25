@@ -1,0 +1,99 @@
+{
+  "name": "litessh",
+  "productName": "LiteSSH",
+  "version": "1.0.1",
+  "description": "Lightweight cross-platform SSH client",
+  "author": "Krainevtech and AI",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "main": "out/main/index.js",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "smoke": "electron . --smoke",
+    "postinstall": "electron-builder install-app-deps",
+    "dist": "electron-vite build && electron-builder"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "node-pty": "^1.1.0",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@fontsource/inter": "^5.2.8",
+    "@radix-ui/react-dialog": "^1.1.6",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ssh2": "^1.15.1",
+    "@uiw/codemirror-extensions-langs": "^4.25.11",
+    "@uiw/codemirror-theme-vscode": "^4.25.11",
+    "@uiw/react-codemirror": "^4.25.11",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.15.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "^5.5.0",
+    "autoprefixer": "^10.4.20",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "lucide-react": "^0.468.0",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "zod": "^3.24.1",
+    "zustand": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.litessh.app",
+    "productName": "LiteSSH",
+    "npmRebuild": false,
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/better-sqlite3/**",
+      "node_modules/node-pty/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": "x64"
+        }
+      ],
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "shortcutName": "LiteSSH",
+      "include": "build/installer.nsh",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}
