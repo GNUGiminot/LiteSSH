@@ -105,10 +105,8 @@ npx prebuild-install --runtime=electron --target=<версия electron> --arch=
 
 ## Документация
 
-- [docs/PROMPT_REVIEW.md](docs/PROMPT_REVIEW.md) — анализ исходного ТЗ: что изменено и почему
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектура, процессная модель, структура, схема БД
-- [docs/PLAN.md](docs/PLAN.md) — поэтапный план (Фаза 0 → v2.0), метрики, риски
-- [docs/TERMIUS_COMPARISON.md](docs/TERMIUS_COMPARISON.md) — сравнение с Termius: что реализовано и что осталось
+- [/ARCHITECTURE.md](/ARCHITECTURE.md) — архитектура, процессная модель, структура, схема БД
+
 
 ## Иконка
 
