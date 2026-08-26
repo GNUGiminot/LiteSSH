@@ -125,7 +125,7 @@ npx prebuild-install --runtime=electron --target=<версия electron> --arch=
 
 ## Автор
 
-**Krainevtech and AI** — спроектировано и разработано совместно.
+**Krainevtech and AI Claude** — спроектировано и разработано совместно.
 Контакт: [Telegram @giminot](https://t.me/giminot)
 
 ## Лицензия
