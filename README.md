@@ -134,3 +134,138 @@ npx prebuild-install --runtime=electron --target=<версия electron> --arch=
 делиться им — **но только в некоммерческих целях**. Слепо копировать проект и продавать / перепродавать
 его (или производные) как платный продукт или сервис **нельзя** без отдельной коммерческой лицензии от
 правообладателя. По вопросам коммерческого использования: [Telegram @giminot](https://t.me/giminot).
+
+ENG
+
+<div align="center">
+
+# ⚛️ LiteSSH
+
+**Lightweight, fast, and beautiful SSH client for Windows, Linux, and macOS.**
+
+Terminal · SFTP · Key manager · Tunnels · Metrics — inspired by MobaXterm,
+but minimalistic, modern, and without the bloat.
+
+`Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
+
+Version **1.0.1** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
+
+</div>
+
+---
+
+## Features
+
+### Connection & Terminal
+- SSH authentication: password / private key / ssh-agent (including Windows OpenSSH agent)
+- Host key verification (TOFU): dialog with SHA256 fingerprint, red warning on key change — MITM protection; separate `known_hosts` management screen
+- xterm.js terminal: 256 colors, WebGL rendering, tabs, search (Ctrl+Shift+F), copy/paste (Ctrl+C/V, Ctrl+Shift+C/V)
+- **Split view**: split terminal into panels (horizontal/vertical, up to 4) on a single connection, with synchronized input across all panels
+- Quick connect `user@host:port` (agent → fallback to password)
+- Local terminals: PowerShell / cmd / WSL / Git Bash in the same tabs as SSH
+- Auto-reconnect of dropped sessions, keep-alive, auto-minimize to tray
+
+### Sessions
+- Saved sessions in SQLite
+- **Groups** (LAN / VPN / Work and custom): collapsible headers with counters, sessions without a group shown separately at the top; create/assign via form (autocomplete) or right-click → "Move to group"
+- **Tags and search** by hostname (name/host/user/group/tags)
+- **Templates**: new session can copy settings from an existing one
+- Import from `~/.ssh/config`, export/import to JSON
+- **ProxyJump / bastion chains**: connect through one or multiple intermediate hosts
+- SSH agent forwarding (ForwardAgent)
+
+### Files (SFTP)
+- Two-panel file manager (local ↔ remote): navigation, create folders, rename, chmod, recursive delete, copy path
+- File transfer: drag & drop from Explorer, "Upload" / "Download" buttons, queue with progress and cancellation, recursive folders
+- **Resume**: interrupted transfers can be continued from where they stopped
+- Preview and edit: CodeMirror editor (~40 languages, save with Ctrl+S), image viewer, hex viewer for binaries
+
+### Keys & Security
+- Key manager: generate Ed25519 / RSA / ECDSA, import (including passphrase-protected), export, deploy to `authorized_keys`
+- Secrets stored in OS keychain by default (DPAPI / Keychain / libsecret), never in plaintext
+- **Optional master password**: scrypt + AES-256-GCM mode, lock screen, auto-lock on inactivity
+
+### Networking & Monitoring
+- **Tunnels**: local (`-L`), remote (`-R`), dynamic SOCKS5 (`-D`), auto-start with session, connection and traffic monitoring
+- **Host metrics**: dashboard for CPU / RAM / disk / load / uptime (polled every 2.5s)
+- **Remote Desktop via SSH in one click** (monitor icon): spawns an ephemeral tunnel to `:3389` on the server and launches the system RDP client (`mstsc.exe`) — rendering is handled by the OS, traffic flows encrypted inside SSH. No built-in RDP renderer by design (to keep the "lite" client lightweight)
+- Session logging to file (without ANSI codes)
+
+### Convenience
+- Command snippets + command history in the command palette (Ctrl+Shift+P)
+- **Script/preset library** (terminal-document icon): multi-line scripts with categories (Provisioning / VPN / custom), editor with syntax highlighting; two execution modes — paste into terminal and **"upload & execute"** (script is written to a temp file on the server via SFTP and executed with a single command — reliable for sudo/heredoc, with live output)
+- **Customizable keyboard shortcuts** (in settings): toggle terminal/files, tabs, split, new terminal, palette, etc. — with rebinding and reset
+- **mc-style file manager**: bottom function key bar (F3 view, F4 edit, F5 copy, F7 folder, F8 delete with confirmation), acts on the active panel
+- Settings: 4 terminal themes, font size, accent color, keyboard shortcuts
+- Multiple windows (like browser tabs), minimize to system tray
+- Dark/light theme, system notifications
+
+### Visual Design
+- Custom title bar (frameless + system buttons via `titleBarOverlay`), color matching the theme
+- Bundled fonts: **Inter** for UI, **JetBrains Mono** for terminal (bundled, works offline)
+- Color-coded file icons by type in SFTP panels, smooth dialog and toast animations (200ms)
+
+## Installation and Running
+
+```powershell
+npm install          # if native module build fails, see note below
+npm run dev          # development with HMR
+npm run build        # production build to out/
+npx electron .       # run the built app
+npm run dist         # installer → release/LiteSSH-<version>-setup.exe
+
+Windows installer: release/LiteSSH-1.0.1-setup.exe (NSIS, x64, with installation directory selection).
+Native modules (better-sqlite3, node-pty) are unpacked from asar (asarUnpack); rebuild during packaging
+is disabled (npmRebuild: false) — using prebuilt binaries for Electron's ABI.
+
+Update/reinstall without data loss. Settings, command history, sessions, and keys are stored in
+%APPDATA%\LiteSSH (userData) — separate from the installation folder, so reinstallation does not affect them.
+When installing over an existing version, a notification shows that data will be preserved,
+and an update is performed (custom build/installer.nsh, deleteAppDataOnUninstall: false). Additionally,
+on first launch of a new version, the app creates a database backup in %APPDATA%\LiteSSH\backups
+(keeps the last 5) — in case of a failed migration.
+
+Note (Windows without VS Build Tools): if npm install fails on better-sqlite3 compilation —
+install dependencies without scripts and pull the prebuilt binary:
+
+powershell
+npm install --ignore-scripts --legacy-peer-deps
+node node_modules/electron/install.js
+cd node_modules/better-sqlite3
+npx prebuild-install --runtime=electron --target=<electron version> --arch=x64
+Architecture (Brief)
+All SSH and secrets live only in the main process; renderer is pure UI over typed IPC (contextIsolation
+
+sandbox, zod validation). Split view panels share a single connection (additional shell channels + client refcounting).
+Heavy modules (CodeMirror, previews) are lazy-loaded. Details in the documentation below.
+
+Documentation
+
+/ARCHITECTURE.md — architecture, process model, structure, database schema
+
+Icon
+The app icon (atom with orbits: build/icon.ico + icon.png) is generated from build/icon.html
+via Electron: npx electron build/make-icon.js. Applied to .exe, window, tray, and installer.
+
+Development Principles
+All SSH and secrets — only in the main process; renderer — pure UI.
+
+Host key verification — always, from the very first version.
+
+Secrets — in OS keychain by default (or under master password), never in plaintext.
+
+Heavy features (editor, previews) — lazy-loaded; lists are virtualized.
+
+Each phase ends with a tool we use daily.
+
+Author
+Krainevtech and AI — co-designed and developed.
+Contact: Telegram @giminot
+
+License
+This project is distributed under the PolyForm Noncommercial License 1.0.0 — see LICENSE.
+
+This is a "source-available" license: the code is open — you are free to view, study, modify, and
+share it — but only for non-commercial purposes. Blindly copying the project and selling / reselling
+it (or derivatives) as a commercial product or service is not allowed without a separate commercial license
+from the copyright holder. For commercial use inquiries: Telegram @giminot.
