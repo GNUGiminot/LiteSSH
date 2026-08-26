@@ -11,11 +11,10 @@
 
 Версия **1.0.1** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
 
-<img width="696" height="343" alt="image" src="https://github.com/user-attachments/assets/f41ef2e4-7938-4825-88a3-c73e3e512371" />
 <img width="1141" height="794" alt="image" src="https://github.com/user-attachments/assets/7ef0eeac-9fb6-46b5-9e71-93a28ecb3e21" />
 <img width="374" height="665" alt="image" src="https://github.com/user-attachments/assets/a15669a1-8ded-4410-a4bc-2b382045a355" />
 <img width="416" height="598" alt="image" src="https://github.com/user-attachments/assets/f5ee0261-751a-48bb-aa41-9e4f7fc25aa5" />
-<img width="329" height="43" alt="image" src="https://github.com/user-attachments/assets/dfe0a458-e9e7-4117-8cf6-709bd7b33335" />
+<img width="696" height="343" alt="image" src="https://github.com/user-attachments/assets/f41ef2e4-7938-4825-88a3-c73e3e512371" />
 
 </div>
 
