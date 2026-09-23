@@ -9,7 +9,7 @@
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Версия **1.1.5** · Автор: **Krainevtech and AI** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
+Версия **1.1.6** · Автор: **Krainevtech and AI** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
 
 </div>
 
@@ -23,6 +23,7 @@
 - Терминал на xterm.js: 256 цветов, WebGL-рендер, вкладки, поиск (Ctrl+Shift+F), копирование/вставка (Ctrl+C/V, Ctrl+Shift+C/V)
 - **Split view**: разделение терминала на панели (горизонтально/вертикально, до 4) на одном соединении, с синхронным вводом во все панели
 - Быстрое подключение `user@host:port` (агент → fallback на пароль)
+- Горизонтальная шкала подключения: соединение, проверка ключа, авторизация и запуск терминала с таймингом каждого этапа
 - Локальные терминалы: PowerShell / cmd / WSL / Git Bash в тех же вкладках, что и SSH
 - Переподключение отвалившихся сессий, keep-alive, автоблокировка окна в трей
 
@@ -103,7 +104,7 @@ npx electron .       # запуск собранного приложения
 npm run dist         # установщик → release/LiteSSH-<версия>-setup.exe
 ```
 
-Готовый установщик Windows: **`release/LiteSSH-1.1.5-setup.exe`** (NSIS, x64, с выбором папки установки).
+Готовый установщик Windows: **`release/LiteSSH-1.1.6-setup.exe`** (NSIS, x64, с выбором папки установки).
 Нативные модули (`better-sqlite3`, `node-pty`) распаковываются из asar (`asarUnpack`); пересборка при
 упаковке отключена (`npmRebuild: false`) — используются готовые prebuild-бинарники под ABI Electron.
 

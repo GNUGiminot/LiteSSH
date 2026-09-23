@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
-import { Check, Server, X } from 'lucide-react'
+import {
+  Check,
+  KeyRound,
+  LoaderCircle,
+  Network,
+  Server,
+  ShieldCheck,
+  SquareTerminal,
+  X,
+  type LucideIcon
+} from 'lucide-react'
+import type { ConnectStage } from '@shared/types'
 import {
   useConnectProgress,
   STAGE_ORDER,
@@ -7,190 +18,231 @@ import {
   type Attempt
 } from '@/stores/useConnectProgress'
 
-/** 842 → «842 мс», 1530 → «1,5 с» */
-function fmtMs(ms: number): string {
-  return ms < 1000 ? `${ms} мс` : `${(ms / 1000).toFixed(1).replace('.', ',')} с`
+const SHORT_LABEL: Record<ConnectStage, string> = {
+  connect: 'Соединение',
+  hostkey: 'Ключ хоста',
+  auth: 'Авторизация',
+  shell: 'Терминал'
 }
 
-/** Тикающий счётчик времени подключения; замирает на finishedAt. */
+const STAGE_ICON: Record<ConnectStage, LucideIcon> = {
+  connect: Network,
+  hostkey: ShieldCheck,
+  auth: KeyRound,
+  shell: SquareTerminal
+}
+
+function fmtMs(ms: number): string {
+  return ms < 1000 ? `${Math.max(0, Math.round(ms))} мс` : `${(ms / 1000).toFixed(1).replace('.', ',')} с`
+}
+
+/** Обновляет общий и активный таймеры десять раз в секунду. */
 function useElapsed(a: Attempt): number {
   const [, tick] = useState(0)
   const running = a.outcome === 'running'
   useEffect(() => {
     if (!running) return
-    const t = setInterval(() => tick((n) => n + 1), 100)
-    return () => clearInterval(t)
+    const timer = setInterval(() => tick((value) => value + 1), 100)
+    return () => clearInterval(timer)
   }, [running])
   return (a.finishedAt ?? Date.now()) - a.startedAt
 }
 
-function StageRow({
-  status,
-  label,
-  ms,
-  last
+function TimelineStage({
+  attempt,
+  stage,
+  now,
+  first
 }: {
-  status: string
-  label: string
-  ms?: number
-  last: boolean
+  attempt: Attempt
+  stage: ConnectStage
+  now: number
+  first: boolean
 }) {
+  const status = attempt.stages[stage]
   const done = status === 'done'
   const active = status === 'active'
   const error = status === 'error'
-
-  const dot = done ? (
-    <Check size={11} strokeWidth={3} className="text-emerald-400" />
-  ) : error ? (
-    <X size={11} strokeWidth={3} className="text-red-400" />
-  ) : active ? (
-    <span className="relative flex h-2 w-2">
-      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-70" />
-      <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
-    </span>
-  ) : (
-    <span className="h-1.5 w-1.5 rounded-full bg-surface-3" />
-  )
+  const Icon = STAGE_ICON[stage]
+  const mark = attempt.marks[stage]
+  const elapsed = active && mark !== undefined ? now - mark : attempt.times[stage]
 
   return (
-    <div className="flex h-6 items-center gap-2">
-      {/* иконка + отрезок «рельса» до следующей стадии */}
-      <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        {dot}
-        {!last && (
-          <span
-            className={`absolute left-1/2 top-full h-[10px] w-px -translate-x-1/2 transition-colors duration-300 ${
-              done ? 'bg-emerald-400/40' : 'bg-surface-3'
-            }`}
-          />
-        )}
-      </span>
+    <div className="relative min-w-0 flex-1 px-1 text-center">
+      {!first && (
+        <div
+          className={`absolute -left-1/2 right-1/2 top-[13px] h-0.5 transition-colors ${
+            done || active || error ? 'bg-accent/55' : 'bg-surface-3'
+          }`}
+        />
+      )}
       <span
-        className={`min-w-0 flex-1 truncate text-[11px] transition-colors ${
-          active
-            ? 'text-content-1'
+        className={`relative z-10 mx-auto flex h-7 w-7 items-center justify-center rounded-full ring-2 ring-surface-1 transition-colors ${
+          done
+            ? 'bg-emerald-500 text-white'
             : error
-              ? 'text-red-400'
-              : done
-                ? 'text-content-2'
-                : 'text-content-3'
+              ? 'bg-red-500 text-white'
+              : active
+                ? 'bg-accent text-white'
+                : 'bg-surface-2 text-content-3'
         }`}
       >
-        {label}
+        {done ? (
+          <Check size={14} strokeWidth={2.7} />
+        ) : error ? (
+          <X size={14} strokeWidth={2.7} />
+        ) : active ? (
+          <LoaderCircle size={14} className="animate-spin" />
+        ) : (
+          <Icon size={13} />
+        )}
       </span>
-      {ms !== undefined && !active && (
-        <span className="shrink-0 font-mono text-[10px] tabular-nums text-content-3">
-          {fmtMs(ms)}
-        </span>
-      )}
+      <div
+        className={`mt-2 truncate text-[11px] font-medium ${
+          error ? 'text-red-400' : active ? 'text-accent' : done ? 'text-content-1' : 'text-content-3'
+        }`}
+      >
+        {SHORT_LABEL[stage]}
+      </div>
+      <div className={`mt-0.5 font-mono text-[10px] tabular-nums ${active ? 'text-accent' : 'text-content-3'}`}>
+        {elapsed !== undefined ? fmtMs(elapsed) : '—'}
+      </div>
     </div>
   )
 }
 
-function Card({ a }: { a: Attempt }) {
-  const dismiss = useConnectProgress((s) => s.dismiss)
-  const elapsed = useElapsed(a)
+function Card({ attempt }: { attempt: Attempt }) {
+  const dismiss = useConnectProgress((state) => state.dismiss)
+  const elapsed = useElapsed(attempt)
+  const now = attempt.startedAt + elapsed
 
-  // Успешную карточку убираем сами через 1.4с; ошибку оставляем до клика
   useEffect(() => {
-    if (a.outcome === 'ok') {
-      const t = setTimeout(() => dismiss(a.id), 1400)
-      return () => clearTimeout(t)
+    if (attempt.outcome === 'ok') {
+      const timer = setTimeout(() => dismiss(attempt.id), 1800)
+      return () => clearTimeout(timer)
     }
-  }, [a.outcome, a.id, dismiss])
+  }, [attempt.outcome, attempt.id, dismiss])
 
-  // Текущая (ещё не завершённая) стадия считается за половину — иначе на первой
-  // стадии полоса стояла бы на нуле всё время ожидания TCP-соединения.
-  const doneCount = STAGE_ORDER.filter((s) => a.stages[s] === 'done').length
-  const inFlight = STAGE_ORDER.some((s) => a.stages[s] === 'active') ? 0.5 : 0
-  const pct =
-    a.outcome === 'ok' ? 100 : ((doneCount + inFlight) / STAGE_ORDER.length) * 100
-  const barColor =
-    a.outcome === 'ok' ? 'bg-emerald-400' : a.outcome === 'error' ? 'bg-red-400' : 'bg-accent'
-
-  const headIcon =
-    a.outcome === 'ok' ? (
-      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/15 ring-1 ring-emerald-400/30">
-        <Check size={13} strokeWidth={2.5} className="text-emerald-400" />
-      </span>
-    ) : a.outcome === 'error' ? (
-      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-500/15 ring-1 ring-red-400/30">
-        <X size={13} strokeWidth={2.5} className="text-red-400" />
-      </span>
-    ) : (
-      <span className="relative flex h-6 w-6 items-center justify-center rounded-full bg-accent/15 ring-1 ring-accent/30">
-        <span className="absolute inset-0 animate-ping rounded-full bg-accent/20" />
-        <Server size={12} className="relative text-accent" />
-      </span>
-    )
+  const doneCount = STAGE_ORDER.filter((stage) => attempt.stages[stage] === 'done').length
+  const inFlight = STAGE_ORDER.some((stage) => attempt.stages[stage] === 'active') ? 0.5 : 0
+  const percent = attempt.outcome === 'ok' ? 100 : ((doneCount + inFlight) / STAGE_ORDER.length) * 100
+  const activeStage = STAGE_ORDER.find((stage) => attempt.stages[stage] === 'active')
+  const failedStage = STAGE_ORDER.find((stage) => attempt.stages[stage] === 'error')
+  const currentStage = failedStage ?? activeStage
+  const progressColor =
+    attempt.outcome === 'ok' ? 'bg-emerald-400' : attempt.outcome === 'error' ? 'bg-red-400' : 'bg-accent'
 
   return (
-    <div className="animate-in-fade pointer-events-auto w-[278px] overflow-hidden rounded-xl border border-surface-3 bg-surface-1/95 shadow-2xl backdrop-blur">
-      {/* полоса прогресса по стадиям */}
-      <div className="h-[3px] w-full bg-surface-2">
+    <div className="animate-in-fade pointer-events-auto w-[min(620px,calc(100vw-24px))] overflow-hidden rounded-xl border border-surface-3 bg-surface-1/97 shadow-2xl backdrop-blur">
+      <div className="h-1 w-full bg-surface-2">
         <div
-          className={`h-full transition-[width] duration-500 ease-out ${barColor} ${
-            a.outcome === 'running' ? 'connect-bar-live' : ''
+          className={`h-full transition-[width] duration-500 ease-out ${progressColor} ${
+            attempt.outcome === 'running' ? 'connect-bar-live' : ''
           }`}
-          style={{ width: `${pct}%` }}
+          style={{ width: `${percent}%` }}
         />
       </div>
 
-      <div className="p-3">
-        <div className="mb-2.5 flex items-center gap-2.5">
-          {headIcon}
+      <div className="px-5 pb-4 pt-4">
+        <div className="mb-5 flex items-center gap-3">
+          <span
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ring-1 ${
+              attempt.outcome === 'ok'
+                ? 'bg-emerald-500/15 text-emerald-400 ring-emerald-400/30'
+                : attempt.outcome === 'error'
+                  ? 'bg-red-500/15 text-red-400 ring-red-400/30'
+                  : 'bg-accent/15 text-accent ring-accent/30'
+            }`}
+          >
+            {attempt.outcome === 'ok' ? (
+              <Check size={17} strokeWidth={2.6} />
+            ) : attempt.outcome === 'error' ? (
+              <X size={17} strokeWidth={2.6} />
+            ) : (
+              <Server size={16} />
+            )}
+          </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-xs font-medium leading-tight text-content-1">
-              {a.title}
+            <div className="truncate text-sm font-medium text-content-1">
+              {attempt.outcome === 'ok'
+                ? `Подключено: ${attempt.title}`
+                : attempt.outcome === 'error'
+                  ? `Не удалось подключиться: ${attempt.title}`
+                  : `Подключение к ${attempt.title}`}
             </div>
-            {a.subtitle && (
-              <div className="truncate font-mono text-[10px] leading-tight text-content-3">
-                {a.subtitle}
+            {attempt.subtitle && (
+              <div className="mt-0.5 truncate font-mono text-[11px] text-content-3">
+                {attempt.subtitle}
               </div>
             )}
           </div>
-          <span className="shrink-0 font-mono text-[10px] tabular-nums text-content-3">
-            {fmtMs(elapsed)}
-          </span>
-          {a.outcome !== 'running' && (
+          <div className="shrink-0 text-right">
+            <div className="font-mono text-base font-medium tabular-nums text-content-1">
+              {fmtMs(elapsed)}
+            </div>
+            <div className="text-[10px] text-content-3">общее время</div>
+          </div>
+          {attempt.outcome !== 'running' && (
             <button
-              onClick={() => dismiss(a.id)}
-              className="-mr-1 shrink-0 rounded p-0.5 text-content-3 hover:bg-surface-2 hover:text-content-1"
+              onClick={() => dismiss(attempt.id)}
+              title="Закрыть"
+              className="-mr-1 shrink-0 rounded p-1 text-content-3 hover:bg-surface-2 hover:text-content-1"
             >
-              <X size={12} />
+              <X size={14} />
             </button>
           )}
         </div>
 
-        <div className="pl-0.5">
-          {STAGE_ORDER.map((s, i) => (
-            <StageRow
-              key={s}
-              status={a.stages[s]}
-              label={STAGE_LABEL[s]}
-              ms={a.times[s]}
-              last={i === STAGE_ORDER.length - 1}
+        <div className="flex px-1">
+          {STAGE_ORDER.map((stage, index) => (
+            <TimelineStage
+              key={stage}
+              attempt={attempt}
+              stage={stage}
+              now={now}
+              first={index === 0}
             />
           ))}
         </div>
 
-        {a.outcome === 'error' && a.error && (
-          <p className="mt-2 break-words rounded-md bg-red-500/10 px-2 py-1.5 text-[10px] leading-snug text-red-400">
-            {a.error}
-          </p>
-        )}
+        <div
+          className={`mt-4 flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-[11px] leading-snug ${
+            attempt.outcome === 'error'
+              ? 'bg-red-500/10 text-red-400'
+              : attempt.outcome === 'ok'
+                ? 'bg-emerald-500/10 text-emerald-400'
+                : 'bg-surface-2 text-content-2'
+          }`}
+        >
+          {attempt.outcome === 'running' ? (
+            <LoaderCircle size={14} className="shrink-0 animate-spin text-accent" />
+          ) : attempt.outcome === 'ok' ? (
+            <Check size={14} className="shrink-0" />
+          ) : (
+            <X size={14} className="shrink-0" />
+          )}
+          <span className="min-w-0 break-words">
+            {attempt.outcome === 'error'
+              ? attempt.error || `Ошибка на этапе «${currentStage ? STAGE_LABEL[currentStage] : 'подключение'}»`
+              : attempt.outcome === 'ok'
+                ? 'SSH-соединение установлено, терминал готов к работе.'
+                : currentStage
+                  ? `${STAGE_LABEL[currentStage]}…`
+                  : 'Подготавливаю SSH-соединение…'}
+          </span>
+        </div>
       </div>
     </div>
   )
 }
 
 export function ConnectProgress() {
-  const attempts = useConnectProgress((s) => s.attempts)
+  const attempts = useConnectProgress((state) => state.attempts)
   if (!attempts.length) return null
   return (
     <div className="pointer-events-none fixed bottom-9 left-1/2 z-50 flex -translate-x-1/2 flex-col items-center gap-2">
-      {attempts.map((a) => (
-        <Card key={a.id} a={a} />
+      {attempts.map((attempt) => (
+        <Card key={attempt.id} attempt={attempt} />
       ))}
     </div>
   )

@@ -1,7 +1,7 @@
 {
   "name": "litessh",
   "productName": "LiteSSH",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "description": "Lightweight cross-platform SSH client",
   "author": "Krainevtech and AI",
   "license": "PolyForm-Noncommercial-1.0.0",
