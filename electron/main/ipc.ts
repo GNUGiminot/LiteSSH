@@ -107,9 +107,12 @@ import {
   stopMcpBridge
 } from './mcp-bridge'
 import { exportMcpActivity, listMcpActivity } from './mcp-activity'
+import { inspectGitHubProject, loginGitHub, publishGitHubProject } from './github'
 import type {
   ConnectRequest,
   ConnectResult,
+  GitHubPublishRequest,
+  GitHubSource,
   McpBridgeConfig,
   McpActivityFilter,
   OpResult,
@@ -159,6 +162,23 @@ const McpBridgeSchema = z.object({
   mode: z.enum(['read-only', 'read-write']),
   allowExec: z.boolean().default(false),
   port: z.number().int().min(1024).max(65535).default(27183)
+})
+
+const GitHubSourceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('local'), path: z.string().min(1).max(4096) }),
+  z.object({ kind: z.literal('remote'), path: z.string().min(1).max(4096), termId: z.string().min(1).max(200) })
+])
+
+const GitHubPublishSchema = z.object({
+  source: GitHubSourceSchema,
+  repositoryUrl: z.string().min(1).max(1000),
+  branch: z.string().min(1).max(200),
+  commitMessage: z.string().min(1).max(300),
+  gitignorePreset: z.enum(['none', 'electron', 'node', 'python', 'visualstudio']),
+  customIgnore: z.string().max(10_000).optional(),
+  replaceRemote: z.boolean().optional(),
+  authorName: z.string().max(200).optional(),
+  authorEmail: z.string().max(254).optional()
 })
 
 function profileFromSession(sessionId: string, visited: Set<string> = new Set()): ConnectProfile {
@@ -427,6 +447,25 @@ export function registerIpc(): void {
     })
     if (selected.canceled || !selected.filePath) return { ok: false, error: 'Отменено' }
     return guard(async () => ({ path: selected.filePath, count: await exportMcpActivity(selected.filePath!, filter) }))
+  })
+
+  // ---- простой мастер публикации проекта на GitHub ----
+  ipcMain.handle('github:pick-directory', async (e): Promise<string | null> => {
+    const owner = BrowserWindow.fromWebContents(e.sender)
+    const selected = await dialog.showOpenDialog(owner!, {
+      title: 'Выберите папку проекта',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return selected.canceled ? null : (selected.filePaths[0] ?? null)
+  })
+  ipcMain.handle('github:inspect', (_e, raw: unknown) =>
+    guard(async () => ({ state: await inspectGitHubProject(GitHubSourceSchema.parse(raw) as GitHubSource) }))
+  )
+  ipcMain.handle('github:login', () => guard(() => loginGitHub()))
+  ipcMain.handle('github:publish', (e, raw: unknown) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return { ok: false, error: 'Окно не найдено' }
+    return guard(() => publishGitHubProject(win, GitHubPublishSchema.parse(raw) as GitHubPublishRequest))
   })
 
   ipcMain.handle('sftp:read', (_e, termId: string, path: string) =>

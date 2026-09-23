@@ -257,6 +257,11 @@ export function McpAccessDialog({ open, termId, title, onClose }: Props) {
                     <p className="text-[11px] text-content-3">
                       Подключение стандартное — используйте любой MCP-клиент с HTTP-транспортом и заголовком Bearer.
                     </p>
+                    <div className="rounded border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-[10px] leading-relaxed text-amber-200">
+                      Локальный адрес <code>http://127.0.0.1</code> подходит для Codex, Claude Code и других
+                      программ на этом компьютере. Не вставляйте его в Claude → Settings → Connectors:
+                      облачному connector нужен доступный из интернета HTTPS endpoint и совместимая авторизация.
+                    </div>
                     {[
                       ['generic', 'Универсальная конфигурация', snippets.generic],
                       ['codex', 'Codex config.toml', snippets.codex],

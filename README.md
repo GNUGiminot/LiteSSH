@@ -9,7 +9,7 @@
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Версия **1.1.4** · Автор: **Krainevtech and AI** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
+Версия **1.1.5** · Автор: **Krainevtech and AI** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
 
 </div>
 
@@ -55,6 +55,7 @@
 - Журналирование сессии в файл (без ANSI-кодов)
 
 ### Удобство
+- **Мастер GitHub**: публикация локальной или текущей серверной папки, выбор `.gitignore`, просмотр изменений, безопасные commit/fetch/fast-forward/push без force push
 - Сниппеты команд + история команд в общей палитре (Ctrl+Shift+P)
 - **Библиотека скриптов/пресетов** (иконка терминала-документа): многострочные скрипты с категориями (Provisioning / VPN / свои), редактор с подсветкой; два режима запуска — вставка в терминал и **«загрузить и выполнить»** (скрипт пишется во временный файл на сервере через SFTP и запускается одной командой — надёжно для sudo/heredoc, с живым выводом)
 - **Настраиваемые горячие клавиши** (в настройках): переключение терминал/файлы, вкладки, split, новый терминал, палитра и др. — с перепривязкой и сбросом
@@ -102,7 +103,7 @@ npx electron .       # запуск собранного приложения
 npm run dist         # установщик → release/LiteSSH-<версия>-setup.exe
 ```
 
-Готовый установщик Windows: **`release/LiteSSH-1.1.4-setup.exe`** (NSIS, x64, с выбором папки установки).
+Готовый установщик Windows: **`release/LiteSSH-1.1.5-setup.exe`** (NSIS, x64, с выбором папки установки).
 Нативные модули (`better-sqlite3`, `node-pty`) распаковываются из asar (`asarUnpack`); пересборка при
 упаковке отключена (`npmRebuild: false`) — используются готовые prebuild-бинарники под ABI Electron.
 

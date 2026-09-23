@@ -4,6 +4,10 @@ import type {
   ConnectRequest,
   ConnectResult,
   HostKeyPrompt,
+  GitHubProgress,
+  GitHubPublishRequest,
+  GitHubRepoState,
+  GitHubSource,
   KeyInfo,
   ListResult,
   LiteSSHApi,
@@ -139,6 +143,15 @@ const api: LiteSSHApi = {
     activity: (filter?: McpActivityFilter): Promise<McpActivityEvent[]> => ipcRenderer.invoke('mcp:activity-list', filter),
     exportActivity: (filter?: McpActivityFilter) => ipcRenderer.invoke('mcp:activity-export', filter),
     onActivity: (cb) => subscribe<[McpActivityEvent]>('mcp:activity', cb)
+  },
+  github: {
+    pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('github:pick-directory'),
+    inspect: (source: GitHubSource): Promise<OpResult & { state?: GitHubRepoState }> =>
+      ipcRenderer.invoke('github:inspect', source),
+    login: (): Promise<OpResult> => ipcRenderer.invoke('github:login'),
+    publish: (request: GitHubPublishRequest): Promise<OpResult & { url?: string; log?: string[] }> =>
+      ipcRenderer.invoke('github:publish', request),
+    onProgress: (cb) => subscribe<[GitHubProgress]>('github:progress', cb)
   },
   keys: {
     list: (): Promise<KeyInfo[]> => ipcRenderer.invoke('keys:list'),

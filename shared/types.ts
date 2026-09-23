@@ -231,6 +231,61 @@ export interface McpBridgeState {
   audit: McpAuditEntry[]
 }
 
+export type GitHubSourceKind = 'local' | 'remote'
+export type GitIgnorePreset = 'none' | 'electron' | 'node' | 'python' | 'visualstudio'
+
+export interface GitHubSource {
+  kind: GitHubSourceKind
+  path: string
+  termId?: string
+}
+
+export interface GitHubChange {
+  status: string
+  path: string
+}
+
+export interface GitHubRepoState {
+  gitAvailable: boolean
+  initialized: boolean
+  branch: string
+  remoteUrl: string
+  hasGitignore: boolean
+  clean: boolean
+  ahead: number
+  behind: number
+  authorName: string
+  authorEmail: string
+  changes: GitHubChange[]
+  truncated?: boolean
+}
+
+export type GitHubPublishPhase =
+  | 'prepare'
+  | 'gitignore'
+  | 'stage'
+  | 'commit'
+  | 'sync'
+  | 'push'
+  | 'done'
+
+export interface GitHubProgress {
+  phase: GitHubPublishPhase
+  message: string
+}
+
+export interface GitHubPublishRequest {
+  source: GitHubSource
+  repositoryUrl: string
+  branch: string
+  commitMessage: string
+  gitignorePreset: GitIgnorePreset
+  customIgnore?: string
+  replaceRemote?: boolean
+  authorName?: string
+  authorEmail?: string
+}
+
 export interface KeyInfo {
   id: string
   name: string
@@ -380,6 +435,13 @@ export interface LiteSSHApi {
     activity(filter?: McpActivityFilter): Promise<McpActivityEvent[]>
     exportActivity(filter?: McpActivityFilter): Promise<OpResult & { path?: string; count?: number }>
     onActivity(cb: (event: McpActivityEvent) => void): () => void
+  }
+  github: {
+    pickDirectory(): Promise<string | null>
+    inspect(source: GitHubSource): Promise<OpResult & { state?: GitHubRepoState }>
+    login(): Promise<OpResult>
+    publish(request: GitHubPublishRequest): Promise<OpResult & { url?: string; log?: string[] }>
+    onProgress(cb: (progress: GitHubProgress) => void): () => void
   }
   keys: {
     list(): Promise<KeyInfo[]>

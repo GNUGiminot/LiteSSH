@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } from 'electron'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { registerIpc } from './ipc'
 import { closeAll } from './ssh/connection-manager'
 import { closeAllPtys, availableShells } from './pty-manager'
@@ -11,6 +11,16 @@ import { flushMcpActivity } from './mcp-activity'
 
 let tray: Tray | null = null
 let isQuitting = false
+const isSmoke = process.argv.includes('--smoke')
+
+// Smoke не должен использовать рабочую БД или зависеть от GPU/папки профиля пользователя.
+if (isSmoke) {
+  const smokeData = join(process.cwd(), '.tmp', 'smoke-user-data', String(process.pid))
+  mkdirSync(smokeData, { recursive: true })
+  app.setPath('userData', smokeData)
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+}
 
 /** Путь к иконке: dev — build/, prod — распакованный ресурс. */
 function iconPath(ext: 'ico' | 'png'): string | undefined {
@@ -127,7 +137,6 @@ function createTray(): void {
 // Single-instance: повторный запуск не плодит новый процесс, а показывает уже открытое
 // окно (иначе в трее оставался старый экземпляр со устаревшим списком сессий).
 // Изолированный smoke должен запускаться рядом с установленным экземпляром и не перехватывать его окно.
-const isSmoke = process.argv.includes('--smoke')
 const gotLock = isSmoke || app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, FolderOpen, Upload } from 'lucide-react'
+import { Download, FolderOpen, Github, Upload } from 'lucide-react'
 import { FilePanel, type PanelState } from './FilePanel'
 import { TransferQueue } from './TransferQueue'
 import { useToasts } from '@/stores/useToasts'
@@ -13,6 +13,8 @@ import type { FileEntry } from '@shared/types'
 interface Props {
   termId: string
   active: boolean
+  onPublishLocal?: (path: string) => void
+  onPublishRemote?: (path: string) => void
 }
 
 function posixParent(p: string): string {
@@ -31,7 +33,7 @@ function winJoin(dir: string, name: string): string {
 
 const EMPTY_PANEL: PanelState = { path: '', entries: [], selection: new Set() }
 
-export function FileManager({ termId, active }: Props) {
+export function FileManager({ termId, active, onPublishLocal, onPublishRemote }: Props) {
   const [local, setLocal] = useState<PanelState>(EMPTY_PANEL)
   const [remote, setRemote] = useState<PanelState>(EMPTY_PANEL)
   const [focused, setFocused] = useState<'local' | 'remote'>('remote')
@@ -344,6 +346,13 @@ export function FileManager({ termId, active }: Props) {
                 <button className={transferBtn} title="Загрузить выбранное на сервер" onClick={() => void uploadSelected()}>
                   <Upload size={12} /> На сервер
                 </button>
+                <button
+                  className={transferBtn}
+                  title="Опубликовать текущую локальную папку на GitHub"
+                  onClick={() => local.path && onPublishLocal?.(local.path)}
+                >
+                  <Github size={12} /> GitHub
+                </button>
               </>
             }
             onNavigate={(p) => void loadLocal(p)}
@@ -380,9 +389,18 @@ export function FileManager({ termId, active }: Props) {
             state={remote}
             showPerms
             extraActions={
-              <button className={transferBtn} title="Скачать выбранное" onClick={() => void downloadSelected()}>
-                <Download size={12} /> Скачать
-              </button>
+              <>
+                <button className={transferBtn} title="Скачать выбранное" onClick={() => void downloadSelected()}>
+                  <Download size={12} /> Скачать
+                </button>
+                <button
+                  className={transferBtn}
+                  title="Опубликовать текущую серверную папку на GitHub"
+                  onClick={() => remote.path && onPublishRemote?.(remote.path)}
+                >
+                  <Github size={12} /> GitHub
+                </button>
+              </>
             }
             onNavigate={(p) => void loadRemote(p)}
             onUp={() => void loadRemote(posixParent(remote.path))}

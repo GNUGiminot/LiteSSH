@@ -6,6 +6,7 @@ import {
   FileTerminal,
   FileText,
   FolderTree,
+  Github,
   MonitorUp,
   Network,
   KeyRound,
@@ -48,6 +49,7 @@ import { ScriptsDialog } from '@/components/ScriptsDialog'
 import { LocalShellMenu } from '@/components/LocalShellMenu'
 import { McpAccessDialog } from '@/components/McpAccessDialog'
 import { McpActivityPanel } from '@/components/McpActivityPanel'
+import { GitHubDialog, type GitHubDialogInitial } from '@/components/GitHubDialog'
 import { LockScreen } from '@/components/LockScreen'
 import { ConnectProgress } from '@/components/ConnectProgress'
 import { useConnectProgress } from '@/stores/useConnectProgress'
@@ -91,6 +93,8 @@ export default function App() {
   const [scriptsOpen, setScriptsOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [mcpActivityOpen, setMcpActivityOpen] = useState(false)
+  const [githubOpen, setGithubOpen] = useState(false)
+  const [githubInitial, setGithubInitial] = useState<GitHubDialogInitial | undefined>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [editing, setEditing] = useState<SessionProfile | null>(null)
   const [logging, setLogging] = useState(false)
@@ -309,6 +313,11 @@ export default function App() {
     setDialogOpen(true)
   }
 
+  const openGitHub = (initial?: GitHubDialogInitial) => {
+    setGithubInitial(initial)
+    setGithubOpen(true)
+  }
+
   const headerBtn =
     'rounded-md p-1.5 text-content-2 transition-colors hover:bg-surface-2 hover:text-content-1'
 
@@ -365,6 +374,13 @@ export default function App() {
         <div className="flex-1" />
         <button title="Новое окно" onClick={() => window.api.newWindow()} className={headerBtn}>
           <SquarePlus size={16} />
+        </button>
+        <button
+          title="Опубликовать локальный или серверный проект на GitHub"
+          onClick={() => openGitHub({ kind: 'local' })}
+          className={headerBtn}
+        >
+          <Github size={16} />
         </button>
         <LocalShellMenu />
         {activeTab?.kind === 'ssh' && (
@@ -512,6 +528,8 @@ export default function App() {
                   key={tab.termId}
                   termId={tab.termId}
                   active={tab.termId === activeId && tab.view === 'files'}
+                  onPublishLocal={(path) => openGitHub({ kind: 'local', path })}
+                  onPublishRemote={(path) => openGitHub({ kind: 'remote', path, termId: tab.termId })}
                 />
               ))}
             {!tabs.length && (
@@ -550,6 +568,12 @@ export default function App() {
         termId={activeTab?.kind === 'ssh' ? activeTab.termId : undefined}
         title={activeTab?.title}
         onClose={() => setMcpOpen(false)}
+      />
+      <GitHubDialog
+        open={githubOpen}
+        initial={githubInitial}
+        activeTermId={activeTab?.kind === 'ssh' ? activeTab.termId : undefined}
+        onClose={() => setGithubOpen(false)}
       />
       <MetricsDialog
         open={metricsOpen}
