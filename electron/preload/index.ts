@@ -7,6 +7,10 @@ import type {
   KeyInfo,
   ListResult,
   LiteSSHApi,
+  McpBridgeConfig,
+  McpBridgeState,
+  McpActivityEvent,
+  McpActivityFilter,
   OpResult,
   RevealResult,
   SessionProfile,
@@ -116,12 +120,25 @@ const api: LiteSSHApi = {
     mkdir: (path): Promise<OpResult> => ipcRenderer.invoke('fs:mkdir', path),
     rename: (from, to): Promise<OpResult> => ipcRenderer.invoke('fs:rename', from, to),
     remove: (path): Promise<OpResult> => ipcRenderer.invoke('fs:remove', path),
-    reveal: (path) => ipcRenderer.send('fs:reveal', path)
+    reveal: (path) => ipcRenderer.send('fs:reveal', path),
+    openDirectory: (path): Promise<OpResult> => ipcRenderer.invoke('fs:open-directory', path)
   },
   transfer: {
+    list: (): Promise<TransferInfo[]> => ipcRenderer.invoke('transfer:list'),
     cancel: (id) => ipcRenderer.send('transfer:cancel', id),
     resume: (id): Promise<OpResult> => ipcRenderer.invoke('transfer:resume', id),
     onUpdate: (cb) => subscribe<[TransferInfo]>('transfer:update', cb)
+  },
+  mcp: {
+    state: (termId: string): Promise<McpBridgeState> => ipcRenderer.invoke('mcp:state', termId),
+    list: (): Promise<McpBridgeState[]> => ipcRenderer.invoke('mcp:list'),
+    start: (config: McpBridgeConfig) => ipcRenderer.invoke('mcp:start', config),
+    stop: (termId: string) => ipcRenderer.invoke('mcp:stop', termId),
+    rotateToken: (termId: string) => ipcRenderer.invoke('mcp:rotate-token', termId),
+    onState: (cb) => subscribe<[]>('mcp:state', cb),
+    activity: (filter?: McpActivityFilter): Promise<McpActivityEvent[]> => ipcRenderer.invoke('mcp:activity-list', filter),
+    exportActivity: (filter?: McpActivityFilter) => ipcRenderer.invoke('mcp:activity-export', filter),
+    onActivity: (cb) => subscribe<[McpActivityEvent]>('mcp:activity', cb)
   },
   keys: {
     list: (): Promise<KeyInfo[]> => ipcRenderer.invoke('keys:list'),

@@ -48,7 +48,8 @@ import {
   upload,
   download,
   cancelTransfer,
-  resumeTransfer
+  resumeTransfer,
+  listTransfers
 } from './ssh/sftp-manager'
 import {
   listSnippets,
@@ -97,13 +98,32 @@ import {
   deployScript
 } from './keys'
 import { exportSessionsJson, importSessionsJson, importSshConfig } from './sessions-io'
+import {
+  getMcpBridgeState,
+  listMcpBridges,
+  revokeMcpForTerm,
+  rotateMcpToken,
+  startMcpBridge,
+  stopMcpBridge
+} from './mcp-bridge'
+import { exportMcpActivity, listMcpActivity } from './mcp-activity'
 import type {
   ConnectRequest,
   ConnectResult,
+  McpBridgeConfig,
+  McpActivityFilter,
   OpResult,
   RevealResult,
   SessionProfile
 } from '@shared/types'
+
+const McpActivityFilterSchema = z.object({
+  termId: z.string().max(200).optional(),
+  server: z.string().max(200).optional(),
+  client: z.enum(['codex', 'claude', 'other']).optional(),
+  status: z.enum(['running', 'ok', 'error']).optional(),
+  query: z.string().max(200).optional()
+})
 
 const SessionSchema = z.object({
   id: z.string().default(''),
@@ -130,6 +150,15 @@ const TunnelSchema = z.object({
   dstHost: z.string().default(''),
   dstPort: z.number().int().min(0).max(65535).default(0),
   autostart: z.boolean().default(false)
+})
+
+const McpBridgeSchema = z.object({
+  termId: z.string().min(1),
+  title: z.string().default('SSH'),
+  root: z.string().default('.'),
+  mode: z.enum(['read-only', 'read-write']),
+  allowExec: z.boolean().default(false),
+  port: z.number().int().min(1024).max(65535).default(27183)
 })
 
 function profileFromSession(sessionId: string, visited: Set<string> = new Set()): ConnectProfile {
@@ -194,7 +223,10 @@ async function guard<T extends Record<string, unknown> | void>(
 
 export function registerIpc(): void {
   // остановка туннелей при закрытии несущей SSH-сессии
-  onTermClosed((termId) => stopTunnelsForTerm(termId))
+  onTermClosed((termId) => {
+    stopTunnelsForTerm(termId)
+    revokeMcpForTerm(termId)
+  })
 
   // ---- sessions ----
   ipcMain.handle('sessions:list', (): SessionProfile[] => listSessions())
@@ -366,9 +398,35 @@ export function registerIpc(): void {
     }
   )
   ipcMain.on('transfer:cancel', (_e, id: string) => cancelTransfer(String(id)))
+  ipcMain.handle('transfer:list', () => listTransfers())
   ipcMain.handle('transfer:resume', (e, id: string) => {
     const win = BrowserWindow.fromWebContents(e.sender)!
     return guard(() => resumeTransfer(win, String(id)))
+  })
+
+  // ---- отдельный MCP-мост для каждой открытой SSH-сессии ----
+  ipcMain.handle('mcp:state', (_e, termId: string) => getMcpBridgeState(String(termId)))
+  ipcMain.handle('mcp:list', () => listMcpBridges())
+  ipcMain.handle('mcp:start', (_e, raw: unknown) =>
+    guard(async () => ({ state: await startMcpBridge(McpBridgeSchema.parse(raw) as McpBridgeConfig) }))
+  )
+  ipcMain.handle('mcp:stop', (_e, termId: string) => guard(async () => ({ state: await stopMcpBridge(String(termId)) })))
+  ipcMain.handle('mcp:rotate-token', (_e, termId: string) =>
+    guard(async () => ({ state: await rotateMcpToken(String(termId)) }))
+  )
+  ipcMain.handle('mcp:activity-list', (_e, raw: unknown) =>
+    listMcpActivity(McpActivityFilterSchema.parse(raw ?? {}) as McpActivityFilter)
+  )
+  ipcMain.handle('mcp:activity-export', async (e, raw: unknown) => {
+    const filter = McpActivityFilterSchema.parse(raw ?? {}) as McpActivityFilter
+    const owner = BrowserWindow.fromWebContents(e.sender)
+    const selected = await dialog.showSaveDialog(owner!, {
+      title: 'Экспорт журнала MCP',
+      defaultPath: join(homedir(), 'mcp-activity.jsonl'),
+      filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
+    })
+    if (selected.canceled || !selected.filePath) return { ok: false, error: 'Отменено' }
+    return guard(async () => ({ path: selected.filePath, count: await exportMcpActivity(selected.filePath!, filter) }))
   })
 
   ipcMain.handle('sftp:read', (_e, termId: string, path: string) =>
@@ -534,6 +592,9 @@ export function registerIpc(): void {
   )
   ipcMain.handle('fs:remove', (_e, path: string) => guard(() => localFs.removeLocal(path)))
   ipcMain.on('fs:reveal', (_e, path: string) => localFs.reveal(path))
+  ipcMain.handle('fs:open-directory', (_e, path: string) =>
+    guard(() => localFs.openDirectory(path))
+  )
 
   // ---- keys ----
   ipcMain.handle('keys:list', () => keysList())

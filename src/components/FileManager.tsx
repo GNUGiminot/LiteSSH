@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Download, Upload } from 'lucide-react'
+import { Download, FolderOpen, Upload } from 'lucide-react'
 import { FilePanel, type PanelState } from './FilePanel'
 import { TransferQueue } from './TransferQueue'
 import { useToasts } from '@/stores/useToasts'
@@ -96,19 +96,27 @@ export function FileManager({ termId, active }: Props) {
 
   // ---- операции ----
 
-  const uploadSelected = async () => {
-    const paths = [...local.selection].map((name) =>
-      local.entries.find((e) => e.name === name)!.path
-    )
+  const uploadSelected = async (contextEntry?: FileEntry) => {
+    const names =
+      contextEntry && !local.selection.has(contextEntry.name)
+        ? [contextEntry.name]
+        : [...local.selection]
+    const paths = names
+      .map((name) => local.entries.find((e) => e.name === name)?.path)
+      .filter((path): path is string => !!path)
     if (!paths.length) return push('info', 'Выберите файлы в локальной панели')
     const res = await window.api.sftp.upload(termId, paths, remote.path)
     if (!res.ok) push('error', res.error ?? 'Ошибка загрузки')
   }
 
-  const downloadSelected = async () => {
-    const items = [...remote.selection].map((name) => {
-      const e = remote.entries.find((x) => x.name === name)!
-      return { path: e.path, isDir: e.isDir }
+  const downloadSelected = async (contextEntry?: FileEntry) => {
+    const names =
+      contextEntry && !remote.selection.has(contextEntry.name)
+        ? [contextEntry.name]
+        : [...remote.selection]
+    const items = names.flatMap((name) => {
+      const e = remote.entries.find((x) => x.name === name)
+      return e ? [{ path: e.path, isDir: e.isDir }] : []
     })
     if (!items.length) return push('info', 'Выберите файлы в удалённой панели')
     if (!local.path) return push('error', 'Откройте локальную директорию')
@@ -220,7 +228,7 @@ export function FileManager({ termId, active }: Props) {
   // ---- контекстные меню ----
 
   const localMenu = (entry: FileEntry): MenuItem[] => [
-    { label: 'Загрузить на сервер', action: () => void uploadSelected() },
+    { label: 'Загрузить на сервер', action: () => void uploadSelected(entry) },
     {
       label: 'Переименовать',
       action: () => {
@@ -254,7 +262,7 @@ export function FileManager({ termId, active }: Props) {
           }
         ]
       : []),
-    { label: 'Скачать', action: () => void downloadSelected() },
+    { label: 'Скачать', action: () => void downloadSelected(entry) },
     {
       label: 'Переименовать',
       action: () => {
@@ -320,9 +328,23 @@ export function FileManager({ termId, active }: Props) {
             title="Локально"
             state={local}
             extraActions={
-              <button className={transferBtn} title="Загрузить выбранное на сервер" onClick={() => void uploadSelected()}>
-                <Upload size={12} /> На сервер
-              </button>
+              <>
+                <button
+                  className={transferBtn}
+                  title="Открыть текущую папку в проводнике"
+                  onClick={() => {
+                    if (!local.path) return push('info', 'Сначала откройте локальную папку')
+                    void window.api.fs.openDirectory(local.path).then((res) => {
+                      if (!res.ok) push('error', res.error ?? 'Не удалось открыть папку')
+                    })
+                  }}
+                >
+                  <FolderOpen size={12} /> Открыть
+                </button>
+                <button className={transferBtn} title="Загрузить выбранное на сервер" onClick={() => void uploadSelected()}>
+                  <Upload size={12} /> На сервер
+                </button>
+              </>
             }
             onNavigate={(p) => void loadLocal(p)}
             onUp={() => {

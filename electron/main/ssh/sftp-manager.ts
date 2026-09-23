@@ -1,8 +1,8 @@
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
-import { promises as fsp, createReadStream, createWriteStream } from 'fs'
+import { promises as fsp } from 'fs'
 import { basename, dirname, join, posix, relative, sep } from 'path'
-import type { SFTPWrapper } from 'ssh2'
+import type { OpenMode, SFTPWrapper } from 'ssh2'
 import { getClient } from './connection-manager'
 import type { FileEntry, TransferInfo } from '@shared/types'
 
@@ -36,6 +36,11 @@ function realpath(sftp: SFTPWrapper, path: string) {
 function mkdirRemote(sftp: SFTPWrapper, path: string) {
   return new Promise<void>((resolve, reject) =>
     sftp.mkdir(path, (err) => (err ? reject(err) : resolve()))
+  )
+}
+function statRemote(sftp: SFTPWrapper, path: string) {
+  return new Promise<{ size: number; mode: number }>((resolve, reject) =>
+    sftp.stat(path, (err, stat) => (err ? reject(err) : resolve(stat)))
   )
 }
 function rmdirRemote(sftp: SFTPWrapper, path: string) {
@@ -175,8 +180,10 @@ export async function sftpWriteFile(termId: string, path: string, base64: string
 interface ActiveTransfer {
   info: TransferInfo
   cancelled: boolean
+  resumeRequested: boolean
   win: BrowserWindow
   lastEmit: number
+  abort?: () => void
 }
 
 /** Описание передачи для возможности возобновления (докачки). */
@@ -192,13 +199,43 @@ interface Descriptor {
 }
 
 class Cancelled extends Error {}
+class TransferStalled extends Error {}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
 
 const transfers = new Map<string, ActiveTransfer>()
 const descriptors = new Map<string, Descriptor>()
+/** Один SFTP-канал обслуживает передачи последовательно, отдельно для каждой SSH-сессии. */
+const transferQueues = new Map<string, string[]>()
+const runningQueues = new Set<string>()
+/** Как OpenSSH: окно параллельных запросов, каждый блок 32 KiB. */
+const WINDOW_REQUESTS = 16
+const TRANSFER_CHUNK_SIZE = 32 * 1024
+const STALL_TIMEOUT_MS = 60_000
+const safeRemoteOffsets = new Map<string, number>()
+const safeLocalOffsets = new Map<string, number>()
+
+export function listTransfers(): TransferInfo[] {
+  return [...transfers.values()].map((transfer) => ({ ...transfer.info }))
+}
 
 export function cancelTransfer(id: string): void {
   const t = transfers.get(id)
-  if (t) t.cancelled = true
+  if (!t) return
+  t.cancelled = true
+  t.abort?.()
+  if (t.info.status === 'queued') {
+    const d = descriptors.get(id)
+    if (d) {
+      const queue = transferQueues.get(d.termId)
+      const index = queue?.indexOf(id) ?? -1
+      if (queue && index >= 0) queue.splice(index, 1)
+    }
+    finishTransfer(t, 'cancelled')
+  }
 }
 
 function emit(t: ActiveTransfer, force = false): void {
@@ -212,11 +249,13 @@ function newTransfer(
   win: BrowserWindow,
   id: string,
   name: string,
-  direction: 'upload' | 'download'
+  direction: 'upload' | 'download',
+  localPath?: string
 ): ActiveTransfer {
   const t: ActiveTransfer = {
-    info: { id, name, direction, total: 0, done: 0, status: 'active' },
+    info: { id, name, direction, total: 0, done: 0, status: 'queued', phase: 'queued', localPath },
     cancelled: false,
+    resumeRequested: false,
     win,
     lastEmit: 0
   }
@@ -225,15 +264,90 @@ function newTransfer(
   return t
 }
 
+function enqueueTransfer(d: Descriptor, t: ActiveTransfer, resume = false): void {
+  t.cancelled = false
+  t.resumeRequested = resume
+  t.info.status = 'queued'
+  t.info.phase = 'queued'
+  t.info.error = undefined
+  t.info.canResume = false
+  t.info.startedAt = undefined
+  t.info.currentFile = undefined
+  t.info.fileIndex = undefined
+  const queue = transferQueues.get(d.termId) ?? []
+  queue.push(t.info.id)
+  transferQueues.set(d.termId, queue)
+  emit(t, true)
+  void pumpTransferQueue(d.termId)
+}
+
+async function pumpTransferQueue(termId: string): Promise<void> {
+  if (runningQueues.has(termId)) return
+  runningQueues.add(termId)
+  try {
+    const queue = transferQueues.get(termId)
+    while (queue?.length) {
+      const id = queue.shift()!
+      const d = descriptors.get(id)
+      const t = transfers.get(id)
+      if (!d || !t || t.cancelled) continue
+      let transferSftp: SFTPWrapper | undefined
+      try {
+        const resume = t.resumeRequested
+        t.resumeRequested = false
+        transferSftp = await openTransferSftp(termId)
+        await runTransfer(transferSftp, d, t, resume)
+      } catch (e) {
+        finishTransfer(t, 'error', (e as Error).message)
+      } finally {
+        t.abort = undefined
+        transferSftp?.end()
+      }
+    }
+    transferQueues.delete(termId)
+  } finally {
+    runningQueues.delete(termId)
+    // Передача могла добавиться между последней проверкой и снятием флага.
+    if (transferQueues.get(termId)?.length) void pumpTransferQueue(termId)
+  }
+}
+
+function openTransferSftp(termId: string): Promise<SFTPWrapper> {
+  const client = getClient(termId)
+  if (!client) return Promise.reject(new Error('SSH-подключение не активно'))
+  return new Promise((resolve, reject) => client.sftp((error, sftp) => error ? reject(error) : resolve(sftp)))
+}
+
 function finishTransfer(t: ActiveTransfer, status: TransferInfo['status'], error?: string): void {
   t.info.status = status
   if (error) t.info.error = error
   // прерванную/сломанную передачу можно возобновить (докачать)
   t.info.canResume = status === 'error' || status === 'cancelled'
   emit(t, true)
+  void appendTransferLog(t.info)
   if (status === 'done') {
     descriptors.delete(t.info.id)
     setTimeout(() => transfers.delete(t.info.id), 60_000)
+  }
+}
+
+async function appendTransferLog(info: TransferInfo): Promise<void> {
+  try {
+    const logDir = join(app.getPath('userData'), 'logs')
+    await fsp.mkdir(logDir, { recursive: true })
+    const clean = (value: string | undefined) => (value ?? '').replace(/[\r\n\t]+/g, ' ')
+    const line = [
+      new Date().toISOString(),
+      info.status,
+      info.direction,
+      clean(info.name),
+      `${info.done}/${info.total}`,
+      clean(info.currentFile),
+      clean(info.error)
+    ].join('\t') + '\n'
+    await fsp.appendFile(join(logDir, 'transfers.log'), line, 'utf8')
+  } catch {
+    /* Диагностический журнал не должен ломать передачу. */
   }
 }
 
@@ -258,32 +372,10 @@ function putFile(
   remote: string,
   size: number,
   onProgress: (done: number) => void,
-  isCancelled: () => boolean
+  isCancelled: () => boolean,
+  resume: boolean
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    void sftpSize(sftp, remote).then((offset) => {
-      if (offset >= size) {
-        onProgress(size)
-        return resolve()
-      }
-      const rs = createReadStream(local, { start: offset })
-      const ws = sftp.createWriteStream(remote, { flags: offset > 0 ? 'a' : 'w' })
-      let done = offset
-      rs.on('data', (chunk: Buffer | string) => {
-        done += chunk.length
-        onProgress(done)
-        if (isCancelled()) {
-          rs.destroy()
-          ws.end()
-          reject(new Cancelled())
-        }
-      })
-      rs.on('error', reject)
-      ws.on('error', reject)
-      ws.on('close', () => resolve())
-      rs.pipe(ws)
-    })
-  })
+  return transferPutFile(sftp, local, remote, size, onProgress, isCancelled, resume)
 }
 
 /** Скачивание файла с докачкой: читаем удалённый начиная с текущего размера локального файла. */
@@ -293,43 +385,263 @@ function getFile(
   local: string,
   size: number,
   onProgress: (done: number) => void,
-  isCancelled: () => boolean
+  isCancelled: () => boolean,
+  resume: boolean
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    void localSize(local).then((offset) => {
-      if (offset >= size && size > 0) {
-        onProgress(size)
-        return resolve()
-      }
-      const start = offset < size ? offset : 0
-      const rs = sftp.createReadStream(remote, { start })
-      const ws = createWriteStream(local, { flags: start > 0 ? 'a' : 'w' })
-      let done = start
-      rs.on('data', (chunk: Buffer | string) => {
-        done += chunk.length
-        onProgress(done)
-        if (isCancelled()) {
-          rs.destroy()
-          ws.end()
-          reject(new Cancelled())
-        }
-      })
-      rs.on('error', reject)
-      ws.on('error', reject)
-      ws.on('finish', () => resolve())
-      rs.pipe(ws)
-    })
+  return transferGetFile(sftp, remote, local, size, onProgress, isCancelled, resume)
+}
+
+function openRemote(sftp: SFTPWrapper, path: string, flags: OpenMode): Promise<Buffer> {
+  return new Promise((resolve, reject) =>
+    sftp.open(path, flags, (error, handle) => error ? reject(error) : resolve(handle))
+  )
+}
+
+function closeRemote(sftp: SFTPWrapper, handle: Buffer): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2_000)
+    sftp.close(handle, () => { clearTimeout(timer); resolve() })
   })
+}
+
+async function readRemote(sftp: SFTPWrapper, handle: Buffer, length: number, position: number): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(length)
+  let offset = 0
+  while (offset < length) {
+    const bytesRead = await new Promise<number>((resolve, reject) =>
+      sftp.read(handle, buffer, offset, length - offset, position + offset, (error, bytes) =>
+        error ? reject(error) : resolve(bytes)
+      )
+    )
+    if (!bytesRead) throw new Error('Неожиданный конец файла на сервере')
+    offset += bytesRead
+  }
+  return buffer
+}
+
+async function readLocal(handle: Awaited<ReturnType<typeof fsp.open>>, length: number, position: number): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(length)
+  let offset = 0
+  while (offset < length) {
+    const { bytesRead } = await handle.read(buffer, offset, length - offset, position + offset)
+    if (!bytesRead) throw new Error('Неожиданный конец локального файла')
+    offset += bytesRead
+  }
+  return buffer
+}
+
+async function writeLocal(handle: Awaited<ReturnType<typeof fsp.open>>, buffer: Buffer, position: number): Promise<void> {
+  let offset = 0
+  while (offset < buffer.length) {
+    const { bytesWritten } = await handle.write(buffer, offset, buffer.length - offset, position + offset)
+    if (!bytesWritten) throw new Error('Не удалось записать локальный файл')
+    offset += bytesWritten
+  }
+}
+
+function writeRemote(sftp: SFTPWrapper, handle: Buffer, buffer: Buffer, position: number): Promise<void> {
+  return new Promise((resolve, reject) =>
+    sftp.write(handle, buffer, 0, buffer.length, position, (error) => error ? reject(error) : resolve())
+  )
+}
+
+function truncateRemote(sftp: SFTPWrapper, handle: Buffer, size: number): Promise<void> {
+  return new Promise((resolve, reject) =>
+    sftp.fsetstat(handle, { size }, (error) => error ? reject(error) : resolve())
+  )
+}
+
+function stallGuard<T>(operation: Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new TransferStalled('Передача остановилась: сервер не подтверждает данные более 60 секунд')),
+      STALL_TIMEOUT_MS
+    )
+    operation.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error) => { clearTimeout(timer); reject(error) }
+    )
+  })
+}
+
+function tryTruncateRemote(sftp: SFTPWrapper, handle: Buffer, size: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2_000)
+    truncateRemote(sftp, handle, size).then(
+      () => { clearTimeout(timer); resolve() },
+      () => { clearTimeout(timer); resolve() }
+    )
+  })
+}
+
+function remotePartPath(remote: string): string {
+  return posix.join(posix.dirname(remote), `.${posix.basename(remote)}.litessh-part`)
+}
+
+function localPartPath(local: string): string {
+  return join(dirname(local), `.${basename(local)}.litessh-part`)
+}
+
+export async function transferPutFile(
+  sftp: SFTPWrapper,
+  local: string,
+  remote: string,
+  size: number,
+  onProgress: (done: number) => void,
+  isCancelled: () => boolean,
+  resume: boolean
+): Promise<void> {
+  if (resume && await sftpSize(sftp, remote) === size) return onProgress(size)
+  const part = remotePartPath(remote)
+  const remoteSize = resume ? await sftpSize(sftp, part) : 0
+  const rememberedOffset = safeRemoteOffsets.get(part)
+  const offset = remoteSize <= size ? Math.min(remoteSize, rememberedOffset ?? remoteSize) : 0
+  const localHandle = await fsp.open(local, 'r')
+  let remoteHandle: Buffer | undefined
+  let confirmed = offset
+  try {
+    remoteHandle = await stallGuard(openRemote(sftp, part, offset > 0 ? 'r+' : 'w'))
+    if (remoteSize !== offset) await stallGuard(truncateRemote(sftp, remoteHandle, offset))
+    let nextOffset = offset
+    let failed = false
+    const completed = new Map<number, number>()
+    const markCompleted = (position: number, length: number) => {
+      completed.set(position, length)
+      while (completed.has(confirmed)) {
+        const contiguous = completed.get(confirmed)!
+        completed.delete(confirmed)
+        confirmed += contiguous
+      }
+      safeRemoteOffsets.set(part, confirmed)
+      onProgress(confirmed)
+    }
+    const worker = async () => {
+      while (!failed && nextOffset < size) {
+        if (isCancelled()) throw new Cancelled()
+        const position = nextOffset
+        const length = Math.min(TRANSFER_CHUNK_SIZE, size - position)
+        nextOffset += length
+        try {
+          const buffer = await readLocal(localHandle, length, position)
+          await stallGuard(writeRemote(sftp, remoteHandle!, buffer, position))
+          markCompleted(position, buffer.length)
+        } catch (error) {
+          failed = true
+          if (error instanceof TransferStalled) sftp.end()
+          throw error
+        }
+      }
+    }
+    onProgress(confirmed)
+    const results = await Promise.allSettled(Array.from(
+      { length: Math.min(WINDOW_REQUESTS, Math.ceil((size - offset) / TRANSFER_CHUNK_SIZE)) },
+      () => worker()
+    ))
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (rejected) throw rejected.reason
+  } catch (error) {
+    safeRemoteOffsets.set(part, confirmed)
+    if (remoteHandle) await tryTruncateRemote(sftp, remoteHandle, confirmed)
+    throw error
+  } finally {
+    await localHandle.close()
+    if (remoteHandle) await closeRemote(sftp, remoteHandle)
+  }
+  if (isCancelled()) throw new Cancelled()
+  const written = await sftpSize(sftp, part)
+  if (written !== size) throw new Error(`Проверка размера не пройдена: записано ${written} из ${size} байт`)
+  await unlinkRemote(sftp, remote).catch(() => undefined)
+  await renameRemote(sftp, part, remote)
+  safeRemoteOffsets.delete(part)
+  onProgress(size)
+}
+
+export async function transferGetFile(
+  sftp: SFTPWrapper,
+  remote: string,
+  local: string,
+  size: number,
+  onProgress: (done: number) => void,
+  isCancelled: () => boolean,
+  resume: boolean
+): Promise<void> {
+  if (resume && await localSize(local) === size && size > 0) return onProgress(size)
+  const part = localPartPath(local)
+  const localBytes = resume ? await localSize(part) : 0
+  const rememberedOffset = safeLocalOffsets.get(part)
+  const offset = localBytes <= size ? Math.min(localBytes, rememberedOffset ?? localBytes) : 0
+  const remoteHandle = await stallGuard(openRemote(sftp, remote, 'r'))
+  const localHandle = await fsp.open(part, offset > 0 ? 'r+' : 'w')
+  let confirmed = offset
+  try {
+    if (localBytes !== offset) await localHandle.truncate(offset)
+    let nextOffset = offset
+    let failed = false
+    const completed = new Map<number, number>()
+    const markCompleted = (position: number, length: number) => {
+      completed.set(position, length)
+      while (completed.has(confirmed)) {
+        const contiguous = completed.get(confirmed)!
+        completed.delete(confirmed)
+        confirmed += contiguous
+      }
+      safeLocalOffsets.set(part, confirmed)
+      onProgress(confirmed)
+    }
+    const worker = async () => {
+      while (!failed && nextOffset < size) {
+        if (isCancelled()) throw new Cancelled()
+        const position = nextOffset
+        const length = Math.min(TRANSFER_CHUNK_SIZE, size - position)
+        nextOffset += length
+        try {
+          const buffer = await stallGuard(readRemote(sftp, remoteHandle, length, position))
+          await writeLocal(localHandle, buffer, position)
+          markCompleted(position, buffer.length)
+        } catch (error) {
+          failed = true
+          if (error instanceof TransferStalled) sftp.end()
+          throw error
+        }
+      }
+    }
+    onProgress(confirmed)
+    const results = await Promise.allSettled(Array.from(
+      { length: Math.min(WINDOW_REQUESTS, Math.ceil((size - offset) / TRANSFER_CHUNK_SIZE)) },
+      () => worker()
+    ))
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    if (rejected) throw rejected.reason
+    await localHandle.sync()
+  } catch (error) {
+    safeLocalOffsets.set(part, confirmed)
+    await localHandle.truncate(confirmed).catch(() => undefined)
+    throw error
+  } finally {
+    await localHandle.close()
+    await closeRemote(sftp, remoteHandle)
+  }
+  if (isCancelled()) throw new Cancelled()
+  const downloaded = await localSize(part)
+  if (downloaded !== size) throw new Error(`Проверка размера не пройдена: получено ${downloaded} из ${size} байт`)
+  await fsp.rm(local, { force: true })
+  await fsp.rename(part, local)
+  safeLocalOffsets.delete(part)
+  onProgress(size)
 }
 
 /** Выполняет (или возобновляет) передачу по дескриптору, переиспользуя строку прогресса. */
 async function runTransfer(
   sftp: SFTPWrapper,
   d: Descriptor,
-  t: ActiveTransfer
+  t: ActiveTransfer,
+  resume: boolean
 ): Promise<void> {
   t.cancelled = false
   t.info.status = 'active'
+  t.info.phase = d.kind === 'dir' ? 'scanning' : 'transferring'
+  if (d.kind === 'file') t.info.startedAt = Date.now()
+  t.abort = () => sftp.end()
   t.info.error = undefined
   t.info.canResume = false
   emit(t, true)
@@ -344,49 +656,83 @@ async function runTransfer(
         emit(t)
       }
       if (d.direction === 'upload') {
-        await putFile(sftp, d.src, d.dst, size, onP, () => t.cancelled)
+        try {
+          await putFile(sftp, d.src, d.dst, size, onP, () => t.cancelled, resume)
+        } catch (error) {
+          throw new Error(`Не удалось загрузить «${d.name}»: ${errorMessage(error)}`)
+        }
       } else {
         await fsp.mkdir(dirname(d.dst), { recursive: true })
-        await getFile(sftp, d.src, d.dst, size, onP, () => t.cancelled)
+        try {
+          await getFile(sftp, d.src, d.dst, size, onP, () => t.cancelled, resume)
+        } catch (error) {
+          throw new Error(`Не удалось скачать «${d.name}»: ${errorMessage(error)}`)
+        }
       }
       t.info.done = size
     } else if (d.direction === 'upload') {
       const { files, dirs } = await walkLocal(d.src)
       t.info.total = files.reduce((s, f) => s + f.size, 0)
+      t.info.totalFiles = files.length
+      t.info.phase = 'preparing'
       emit(t, true)
       await ensureRemoteDir(sftp, d.dst)
       for (const dd of dirs) await ensureRemoteDir(sftp, posix.join(d.dst, dd.split(sep).join('/')))
       let base = 0
-      for (const f of files) {
+      for (let index = 0; index < files.length; index++) {
+        const f = files[index]
+        if (t.cancelled) throw new Cancelled()
+        t.info.phase = 'transferring'
+        t.info.startedAt ??= Date.now()
+        t.info.currentFile = f.rel
+        t.info.fileIndex = index + 1
+        emit(t, true)
         const remoteFile = posix.join(d.dst, f.rel.split(sep).join('/'))
-        await putFile(sftp, f.abs, remoteFile, f.size, (done) => {
-          t.info.done = base + done
-          emit(t)
-        }, () => t.cancelled)
+        try {
+          await putFile(sftp, f.abs, remoteFile, f.size, (done) => {
+            t.info.done = base + done
+            emit(t)
+          }, () => t.cancelled, resume)
+        } catch (error) {
+          throw new Error(`Не удалось загрузить «${f.rel}»: ${errorMessage(error)}`)
+        }
         base += f.size
         t.info.done = base
       }
     } else {
       const { files, dirs } = await walkRemote(sftp, d.src)
       t.info.total = files.reduce((s, f) => s + f.size, 0)
+      t.info.totalFiles = files.length
+      t.info.phase = 'preparing'
       emit(t, true)
       await fsp.mkdir(d.dst, { recursive: true })
       for (const dd of dirs) await fsp.mkdir(join(d.dst, dd.split('/').join(sep)), { recursive: true })
       let base = 0
-      for (const f of files) {
+      for (let index = 0; index < files.length; index++) {
+        const f = files[index]
+        if (t.cancelled) throw new Cancelled()
+        t.info.phase = 'transferring'
+        t.info.startedAt ??= Date.now()
+        t.info.currentFile = f.rel
+        t.info.fileIndex = index + 1
+        emit(t, true)
         const localFile = join(d.dst, f.rel.split('/').join(sep))
-        await getFile(sftp, f.abs, localFile, f.size, (done) => {
-          t.info.done = base + done
-          emit(t)
-        }, () => t.cancelled)
+        try {
+          await getFile(sftp, f.abs, localFile, f.size, (done) => {
+            t.info.done = base + done
+            emit(t)
+          }, () => t.cancelled, resume)
+        } catch (error) {
+          throw new Error(`Не удалось скачать «${f.rel}»: ${errorMessage(error)}`)
+        }
         base += f.size
         t.info.done = base
       }
     }
     finishTransfer(t, 'done')
   } catch (e) {
-    if (e instanceof Cancelled) finishTransfer(t, 'cancelled')
-    else finishTransfer(t, 'error', (e as Error).message)
+    if (t.cancelled || e instanceof Cancelled) finishTransfer(t, 'cancelled')
+    else finishTransfer(t, 'error', errorMessage(e))
   }
 }
 
@@ -394,8 +740,11 @@ export async function resumeTransfer(win: BrowserWindow, id: string): Promise<vo
   const d = descriptors.get(id)
   const t = transfers.get(id)
   if (!d || !t) throw new Error('Передача недоступна для возобновления')
-  const sftp = await getSftp(d.termId)
-  void runTransfer(sftp, d, t)
+  if (t.info.status === 'active' || t.info.status === 'queued') {
+    throw new Error('Передача уже выполняется или ожидает в очереди')
+  }
+  t.win = win
+  enqueueTransfer(d, t, true)
 }
 
 async function walkLocal(root: string): Promise<{ files: { abs: string; rel: string; size: number }[]; dirs: string[] }> {
@@ -425,8 +774,14 @@ async function ensureRemoteDir(sftp: SFTPWrapper, path: string): Promise<void> {
     cur = cur === '' ? part : posix.join(cur, part)
     try {
       await mkdirRemote(sftp, cur)
-    } catch {
-      /* уже существует */
+    } catch (error) {
+      try {
+        const stat = await statRemote(sftp, cur)
+        if ((stat.mode & S_IFMT) === S_IFDIR) continue
+      } catch {
+        /* Ни каталога, ни успешного mkdir — возвращаем исходную понятную ошибку. */
+      }
+      throw new Error(`Не удалось создать каталог «${cur}»: ${errorMessage(error)}`)
     }
   }
 }
@@ -437,7 +792,7 @@ export async function upload(
   localPaths: string[],
   remoteDir: string
 ): Promise<void> {
-  const sftp = await getSftp(termId)
+  await getSftp(termId)
   for (const localPath of localPaths) {
     const name = basename(localPath)
     const isDir = (await fsp.stat(localPath)).isDirectory()
@@ -451,7 +806,7 @@ export async function upload(
     }
     const t = newTransfer(win, randomUUID(), name, 'upload')
     descriptors.set(t.info.id, d)
-    void runTransfer(sftp, d, t)
+    enqueueTransfer(d, t)
   }
 }
 
@@ -483,7 +838,7 @@ export async function download(
   items: { path: string; isDir: boolean }[],
   localDir: string
 ): Promise<void> {
-  const sftp = await getSftp(termId)
+  await getSftp(termId)
   for (const item of items) {
     const name = posix.basename(item.path)
     const d: Descriptor = {
@@ -494,8 +849,8 @@ export async function download(
       dst: join(localDir, name),
       name
     }
-    const t = newTransfer(win, randomUUID(), name, 'download')
+    const t = newTransfer(win, randomUUID(), name, 'download', d.dst)
     descriptors.set(t.info.id, d)
-    void runTransfer(sftp, d, t)
+    enqueueTransfer(d, t)
   }
 }

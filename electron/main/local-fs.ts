@@ -64,3 +64,8 @@ export async function removeLocal(path: string): Promise<void> {
 export function reveal(path: string): void {
   shell.showItemInFolder(path)
 }
+
+export async function openDirectory(path: string): Promise<void> {
+  const error = await shell.openPath(path)
+  if (error) throw new Error(error)
+}
