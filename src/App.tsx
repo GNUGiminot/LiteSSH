@@ -6,12 +6,15 @@ import {
   FileTerminal,
   FileText,
   FolderTree,
+  Github,
   MonitorUp,
+  Network,
   KeyRound,
   Link2,
   Moon,
   PanelLeft,
   Rows2,
+  ScrollText,
   Settings2,
   ShieldCheck,
   SplitSquareHorizontal,
@@ -44,6 +47,9 @@ import { KnownHostsDialog } from '@/components/KnownHostsDialog'
 import { MetricsDialog } from '@/components/MetricsDialog'
 import { ScriptsDialog } from '@/components/ScriptsDialog'
 import { LocalShellMenu } from '@/components/LocalShellMenu'
+import { McpAccessDialog } from '@/components/McpAccessDialog'
+import { McpActivityPanel } from '@/components/McpActivityPanel'
+import { GitHubDialog, type GitHubDialogInitial } from '@/components/GitHubDialog'
 import { LockScreen } from '@/components/LockScreen'
 import { ConnectProgress } from '@/components/ConnectProgress'
 import { useConnectProgress } from '@/stores/useConnectProgress'
@@ -56,7 +62,7 @@ import { useTabs } from '@/stores/useTabs'
 import { useTransfers } from '@/stores/useTransfers'
 import { useToasts } from '@/stores/useToasts'
 import { useVault } from '@/stores/useVault'
-import type { SessionProfile } from '@shared/types'
+import type { SessionProfile, TransferInfo } from '@shared/types'
 
 function hexToRgb(hex: string): string {
   const m = hex.replace('#', '')
@@ -85,6 +91,10 @@ export default function App() {
   const [knownHostsOpen, setKnownHostsOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
   const [scriptsOpen, setScriptsOpen] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
+  const [mcpActivityOpen, setMcpActivityOpen] = useState(false)
+  const [githubOpen, setGithubOpen] = useState(false)
+  const [githubInitial, setGithubInitial] = useState<GitHubDialogInitial | undefined>()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [editing, setEditing] = useState<SessionProfile | null>(null)
   const [logging, setLogging] = useState(false)
@@ -168,7 +178,7 @@ export default function App() {
   }, [autoLockMinutes])
 
   useEffect(() => {
-    return window.api.transfer.onUpdate((info) => {
+    const update = (info: TransferInfo) => {
       useTransfers.getState().update(info)
       if ((info.status === 'done' || info.status === 'error') && !document.hasFocus()) {
         new Notification('LiteSSH', {
@@ -178,7 +188,17 @@ export default function App() {
               : `Ошибка передачи ${info.name}: ${info.error ?? ''}`
         })
       }
-    })
+    }
+    const unsubscribe = window.api.transfer.onUpdate(update)
+    const sync = () => void window.api.transfer.list().then((items) =>
+      items.forEach((info) => useTransfers.getState().update(info))
+    )
+    sync()
+    const timer = setInterval(sync, 2_000)
+    return () => {
+      clearInterval(timer)
+      unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -293,6 +313,11 @@ export default function App() {
     setDialogOpen(true)
   }
 
+  const openGitHub = (initial?: GitHubDialogInitial) => {
+    setGithubInitial(initial)
+    setGithubOpen(true)
+  }
+
   const headerBtn =
     'rounded-md p-1.5 text-content-2 transition-colors hover:bg-surface-2 hover:text-content-1'
 
@@ -350,6 +375,13 @@ export default function App() {
         <button title="Новое окно" onClick={() => window.api.newWindow()} className={headerBtn}>
           <SquarePlus size={16} />
         </button>
+        <button
+          title="Опубликовать локальный или серверный проект на GitHub"
+          onClick={() => openGitHub({ kind: 'local' })}
+          className={headerBtn}
+        >
+          <Github size={16} />
+        </button>
         <LocalShellMenu />
         {activeTab?.kind === 'ssh' && (
           <>
@@ -371,6 +403,13 @@ export default function App() {
             </button>
             <button title="Туннели" onClick={() => setTunnelsOpen(true)} className={headerBtn}>
               <ArrowRightLeft size={16} />
+            </button>
+            <button
+              title="Предоставить MCP-доступ к этой SSH-сессии"
+              onClick={() => setMcpOpen(true)}
+              className={headerBtn}
+            >
+              <Network size={16} />
             </button>
             <button
               title="Открыть удалённый рабочий стол (RDP через SSH)"
@@ -413,6 +452,13 @@ export default function App() {
             )}
           </>
         )}
+        <button
+          title="Активность и журнал MCP"
+          onClick={() => setMcpActivityOpen((value) => !value)}
+          className={mcpActivityOpen ? `${headerBtn} text-accent` : headerBtn}
+        >
+          <ScrollText size={16} />
+        </button>
         <button
           title="Скрипты / пресеты"
           onClick={() => setScriptsOpen(true)}
@@ -482,6 +528,8 @@ export default function App() {
                   key={tab.termId}
                   termId={tab.termId}
                   active={tab.termId === activeId && tab.view === 'files'}
+                  onPublishLocal={(path) => openGitHub({ kind: 'local', path })}
+                  onPublishRemote={(path) => openGitHub({ kind: 'remote', path, termId: tab.termId })}
                 />
               ))}
             {!tabs.length && (
@@ -497,6 +545,7 @@ export default function App() {
             )}
           </div>
         </main>
+        <McpActivityPanel open={mcpActivityOpen} onClose={() => setMcpActivityOpen(false)} />
       </div>
 
       <StatusBar />
@@ -514,6 +563,18 @@ export default function App() {
       <TunnelsDialog open={tunnelsOpen} onClose={() => setTunnelsOpen(false)} />
       <KnownHostsDialog open={knownHostsOpen} onClose={() => setKnownHostsOpen(false)} />
       <ScriptsDialog open={scriptsOpen} onClose={() => setScriptsOpen(false)} />
+      <McpAccessDialog
+        open={mcpOpen}
+        termId={activeTab?.kind === 'ssh' ? activeTab.termId : undefined}
+        title={activeTab?.title}
+        onClose={() => setMcpOpen(false)}
+      />
+      <GitHubDialog
+        open={githubOpen}
+        initial={githubInitial}
+        activeTermId={activeTab?.kind === 'ssh' ? activeTab.termId : undefined}
+        onClose={() => setGithubOpen(false)}
+      />
       <MetricsDialog
         open={metricsOpen}
         termId={activeTab?.kind === 'ssh' ? activeTab.termId : null}

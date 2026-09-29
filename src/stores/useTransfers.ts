@@ -17,19 +17,22 @@ export const useTransfers = create<TransfersState>((set) => ({
   update: (info) =>
     set((s) => {
       const isNew = !s.items[info.id]
-      const wasActive = s.items[info.id]?.status === 'active'
-      const finished = info.status !== 'active'
+      const previousStatus = s.items[info.id]?.status
+      const wasPending = previousStatus === 'active' || previousStatus === 'queued'
+      const finished = info.status !== 'active' && info.status !== 'queued'
       return {
         items: { ...s.items, [info.id]: info },
-        order: isNew ? [info.id, ...s.order].slice(0, 50) : s.order,
-        completedTick: (isNew || wasActive) && finished ? s.completedTick + 1 : s.completedTick
+        // Сохраняем порядок добавления: он совпадает с порядком выполнения очереди.
+        order: isNew ? [...s.order, info.id].slice(-50) : s.order,
+        completedTick: !isNew && wasPending && finished ? s.completedTick + 1 : s.completedTick
       }
     }),
   clearFinished: () =>
     set((s) => {
       const items: Record<string, TransferInfo> = {}
       const order = s.order.filter((id) => {
-        const keep = s.items[id]?.status === 'active'
+        const status = s.items[id]?.status
+        const keep = status === 'active' || status === 'queued'
         if (keep) items[id] = s.items[id]
         return keep
       })

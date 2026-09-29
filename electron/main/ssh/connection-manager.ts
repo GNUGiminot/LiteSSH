@@ -223,6 +223,74 @@ export function execOnClient(
   })
 }
 
+/** Ограниченный exec для внешних инструментов: таймаут и жёсткий предел буфера вывода. */
+export function execOnClientLimited(
+  termId: string,
+  command: string,
+  options: {
+    timeoutMs: number
+    maxOutputBytes: number
+    onStdout?: (chunk: string) => void
+    onStderr?: (chunk: string) => void
+  }
+): Promise<{ code: number; stdout: string; stderr: string; truncated: boolean }> {
+  return new Promise((resolve, reject) => {
+    const client = terms.get(termId)?.client
+    if (!client) return reject(new Error('SSH-сессия не активна'))
+    client.exec(command, (error, stream) => {
+      if (error) return reject(error)
+      let settled = false
+      let stdoutBytes = 0
+      let stderrBytes = 0
+      let truncated = false
+      const stdout: Buffer[] = []
+      const stderr: Buffer[] = []
+      const append = (target: Buffer[], chunk: Buffer, used: number): number => {
+        const remaining = Math.max(0, options.maxOutputBytes - stdoutBytes - stderrBytes)
+        if (remaining <= 0) {
+          truncated = true
+          return used
+        }
+        const kept = chunk.subarray(0, remaining)
+        target.push(kept)
+        if (kept.length < chunk.length) truncated = true
+        return used + kept.length
+      }
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        stream.close()
+        reject(new Error(`Команда превысила таймаут ${Math.ceil(options.timeoutMs / 1000)} с`))
+      }, options.timeoutMs)
+      stream.on('data', (chunk: Buffer) => {
+        stdoutBytes = append(stdout, chunk, stdoutBytes)
+        options.onStdout?.(chunk.toString('utf8'))
+      })
+      stream.stderr.on('data', (chunk: Buffer) => {
+        stderrBytes = append(stderr, chunk, stderrBytes)
+        options.onStderr?.(chunk.toString('utf8'))
+      })
+      stream.on('error', (streamError: Error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(streamError)
+      })
+      stream.on('close', (code: number) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve({
+          code: code ?? 0,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
+          truncated
+        })
+      })
+    })
+  })
+}
+
 /** Одноразовое подключение для exec-команды (деплой ключей и т.п.). */
 export function execOnProfile(
   win: BrowserWindow,

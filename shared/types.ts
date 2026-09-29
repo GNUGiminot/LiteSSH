@@ -140,7 +140,7 @@ export interface ListResult {
   error?: string
 }
 
-export type TransferStatus = 'active' | 'done' | 'error' | 'cancelled'
+export type TransferStatus = 'queued' | 'active' | 'done' | 'error' | 'cancelled'
 
 export interface TransferInfo {
   id: string
@@ -150,8 +150,140 @@ export interface TransferInfo {
   done: number
   status: TransferStatus
   error?: string
+  /** Локальный файл или каталог назначения для скачивания. */
+  localPath?: string
   /** Прерванную передачу можно возобновить (докачать) */
   canResume?: boolean
+  phase?: 'queued' | 'scanning' | 'preparing' | 'transferring'
+  currentFile?: string
+  fileIndex?: number
+  totalFiles?: number
+  startedAt?: number
+}
+
+export type McpAccessMode = 'read-only' | 'read-write'
+
+export interface McpAuditEntry {
+  ts: number
+  tool: string
+  ok: boolean
+  detail: string
+}
+
+export type McpActivityStatus = 'running' | 'ok' | 'error'
+
+export interface McpActivityEvent {
+  id: string
+  termId: string
+  server: string
+  client: 'codex' | 'claude' | 'other'
+  tool: string
+  status: McpActivityStatus
+  startedAt: number
+  finishedAt?: number
+  summary: string
+  params: Record<string, string | number | boolean>
+  error?: string
+  exitCode?: number
+  outputBytes?: number
+  truncated?: boolean
+  /** Только в памяти текущего запуска; в журнал на диск не записываются. */
+  command?: string
+  stdout?: string
+  stderr?: string
+}
+
+export interface McpActivityFilter {
+  termId?: string
+  server?: string
+  client?: McpActivityEvent['client']
+  status?: McpActivityStatus
+  query?: string
+}
+
+export interface McpClientToken {
+  id: McpActivityEvent['client']
+  label: string
+  token: string
+}
+
+export interface McpBridgeConfig {
+  termId: string
+  title: string
+  root: string
+  mode: McpAccessMode
+  allowExec: boolean
+  port: number
+}
+
+export interface McpBridgeState {
+  running: boolean
+  url?: string
+  token?: string
+  clients?: McpClientToken[]
+  termId?: string
+  title?: string
+  root?: string
+  mode?: McpAccessMode
+  allowExec?: boolean
+  port?: number
+  startedAt?: number
+  audit: McpAuditEntry[]
+}
+
+export type GitHubSourceKind = 'local' | 'remote'
+export type GitIgnorePreset = 'none' | 'electron' | 'node' | 'python' | 'visualstudio'
+
+export interface GitHubSource {
+  kind: GitHubSourceKind
+  path: string
+  termId?: string
+}
+
+export interface GitHubChange {
+  status: string
+  path: string
+}
+
+export interface GitHubRepoState {
+  gitAvailable: boolean
+  initialized: boolean
+  branch: string
+  remoteUrl: string
+  hasGitignore: boolean
+  clean: boolean
+  ahead: number
+  behind: number
+  authorName: string
+  authorEmail: string
+  changes: GitHubChange[]
+  truncated?: boolean
+}
+
+export type GitHubPublishPhase =
+  | 'prepare'
+  | 'gitignore'
+  | 'stage'
+  | 'commit'
+  | 'sync'
+  | 'push'
+  | 'done'
+
+export interface GitHubProgress {
+  phase: GitHubPublishPhase
+  message: string
+}
+
+export interface GitHubPublishRequest {
+  source: GitHubSource
+  repositoryUrl: string
+  branch: string
+  commitMessage: string
+  gitignorePreset: GitIgnorePreset
+  customIgnore?: string
+  replaceRemote?: boolean
+  authorName?: string
+  authorEmail?: string
 }
 
 export interface KeyInfo {
@@ -285,11 +417,31 @@ export interface LiteSSHApi {
     rename(from: string, to: string): Promise<OpResult>
     remove(path: string): Promise<OpResult>
     reveal(path: string): void
+    openDirectory(path: string): Promise<OpResult>
   }
   transfer: {
+    list(): Promise<TransferInfo[]>
     cancel(id: string): void
     resume(id: string): Promise<OpResult>
     onUpdate(cb: (info: TransferInfo) => void): () => void
+  }
+  mcp: {
+    state(termId: string): Promise<McpBridgeState>
+    list(): Promise<McpBridgeState[]>
+    start(config: McpBridgeConfig): Promise<OpResult & { state?: McpBridgeState }>
+    stop(termId: string): Promise<OpResult & { state?: McpBridgeState }>
+    rotateToken(termId: string): Promise<OpResult & { state?: McpBridgeState }>
+    onState(cb: () => void): () => void
+    activity(filter?: McpActivityFilter): Promise<McpActivityEvent[]>
+    exportActivity(filter?: McpActivityFilter): Promise<OpResult & { path?: string; count?: number }>
+    onActivity(cb: (event: McpActivityEvent) => void): () => void
+  }
+  github: {
+    pickDirectory(): Promise<string | null>
+    inspect(source: GitHubSource): Promise<OpResult & { state?: GitHubRepoState }>
+    login(): Promise<OpResult>
+    publish(request: GitHubPublishRequest): Promise<OpResult & { url?: string; log?: string[] }>
+    onProgress(cb: (progress: GitHubProgress) => void): () => void
   }
   keys: {
     list(): Promise<KeyInfo[]>

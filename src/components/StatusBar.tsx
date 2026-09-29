@@ -29,7 +29,7 @@ export function StatusBar() {
       <div className="flex items-center gap-3 text-content-3">
         <span>сессий: {sessions.length}</span>
         <span>активных: {connected}</span>
-        <span>LiteSSH 1.0.1</span>
+        <span>LiteSSH 1.1.4</span>
       </div>
     </footer>
   )

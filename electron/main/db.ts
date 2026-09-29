@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { app } from 'electron'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'fs'
 import type { SessionProfile } from '@shared/types'
@@ -49,6 +49,7 @@ function backupOnVersionChange(database: Database.Database, dbPath: string): voi
 export function getDb(): Database.Database {
   if (!db) {
     const dbPath = join(app.getPath('userData'), 'litessh.db')
+    mkdirSync(dirname(dbPath), { recursive: true })
     const existed = existsSync(dbPath)
     db = new Database(dbPath)
     db.pragma('journal_mode = WAL')

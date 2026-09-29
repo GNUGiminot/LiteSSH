@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, RotateCw, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, FolderOpen, RotateCw, Trash2, X } from 'lucide-react'
 import { useTransfers } from '@/stores/useTransfers'
 
 function humanSize(n: number): string {
@@ -10,7 +10,11 @@ function humanSize(n: number): string {
 
 export function TransferQueue() {
   const { items, order, clearFinished } = useTransfers()
-  const visible = order.slice(0, 8)
+  const pending = order.filter((id) => items[id]?.status === 'active' || items[id]?.status === 'queued')
+  const finished = [...order]
+    .reverse()
+    .filter((id) => items[id]?.status !== 'active' && items[id]?.status !== 'queued')
+  const visible = [...pending, ...finished].slice(0, 8)
   if (!visible.length) return null
 
   return (
@@ -31,6 +35,8 @@ export function TransferQueue() {
         const t = items[id]
         if (!t) return null
         const pct = t.total > 0 ? Math.min(100, Math.round((t.done / t.total) * 100)) : 0
+        const elapsed = t.startedAt ? Math.max(0.001, (Date.now() - t.startedAt) / 1000) : 0
+        const speed = elapsed > 0 && t.done > 0 ? t.done / elapsed : 0
         return (
           <div key={id} className="flex items-center gap-2 px-2 py-1">
             {t.direction === 'upload' ? (
@@ -38,8 +44,11 @@ export function TransferQueue() {
             ) : (
               <ArrowDown size={12} className="shrink-0 text-emerald-400" />
             )}
-            <span className="w-40 truncate text-[11px] text-content-1" title={t.name}>
-              {t.name}
+            <span
+              className="w-48 truncate text-[11px] text-content-1"
+              title={t.localPath ? `${t.name}\nСохраняется в: ${t.localPath}` : t.name}
+            >
+              {t.currentFile ? `${t.name} · ${t.currentFile}` : t.name}
             </span>
             <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-2">
               <div
@@ -60,9 +69,15 @@ export function TransferQueue() {
                 ? 'ошибка'
                 : t.status === 'cancelled'
                   ? 'отменено'
+                  : t.status === 'queued'
+                    ? 'в очереди'
+                  : t.phase === 'scanning'
+                    ? 'сканирование…'
+                  : t.phase === 'preparing'
+                    ? 'создание папок…'
                   : t.status === 'done'
                     ? humanSize(t.total)
-                    : `${humanSize(t.done)} / ${humanSize(t.total)}`}
+                    : `${humanSize(t.done)} / ${humanSize(t.total)}${speed ? ` · ${humanSize(speed)}/s` : ''}${t.totalFiles ? ` · ${t.fileIndex ?? 0}/${t.totalFiles}` : ''}`}
             </span>
             {t.status === 'active' && (
               <button
@@ -71,6 +86,24 @@ export function TransferQueue() {
                 className="rounded p-0.5 text-content-3 hover:bg-surface-2 hover:text-red-400"
               >
                 <X size={11} />
+              </button>
+            )}
+            {t.status === 'queued' && (
+              <button
+                onClick={() => window.api.transfer.cancel(id)}
+                title="Убрать из очереди"
+                className="rounded p-0.5 text-content-3 hover:bg-surface-2 hover:text-red-400"
+              >
+                <X size={11} />
+              </button>
+            )}
+            {t.direction === 'download' && t.status === 'done' && t.localPath && (
+              <button
+                onClick={() => window.api.fs.reveal(t.localPath!)}
+                title={`Открыть расположение: ${t.localPath}`}
+                className="rounded p-0.5 text-content-3 hover:bg-surface-2 hover:text-accent"
+              >
+                <FolderOpen size={11} />
               </button>
             )}
             {t.canResume && (
