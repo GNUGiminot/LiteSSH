@@ -11,7 +11,7 @@
   --surface-3: 222 225 230;
   --content-1: 23 27 33;
   --content-2: 75 85 99;
-  --content-3: 148 155 165;
+  --content-3: 107 114 128;
 }
 
 .dark {
@@ -21,7 +21,7 @@
   --surface-3: 48 54 61;
   --content-1: 230 237 243;
   --content-2: 139 148 158;
-  --content-3: 88 96 105;
+  --content-3: 125 133 144;
 }
 
 html,

@@ -173,6 +173,10 @@ async function writablePath(sftp: SFTPWrapper, root: string, requested: string):
     const parent = await existingPath(sftp, root, posix.dirname(candidate))
     const target = posix.join(parent, posix.basename(candidate))
     if (!inside(root, target)) throw error
+    // realpath не прошёл, но запись существует — это «битая» символическая ссылка.
+    // Запись через неё ушла бы по её цели, в том числе за пределы корня.
+    const dangling = await sftpLstat(sftp, target).then(() => true, () => false)
+    if (dangling) throw new Error('Путь является символической ссылкой на несуществующий объект — запись через неё запрещена')
     return target
   }
 }
@@ -232,7 +236,7 @@ function posixQuote(value: string): string {
 
 function buildMcpServer(access: AccessGrant): McpServer {
   const server = new McpServer(
-    { name: 'litessh', version: '1.1.4' },
+    { name: 'litessh', version: app.getVersion() },
     {
       instructions:
         `Работайте только в разрешённом SSH-корне ${access.root}. ` +
@@ -650,7 +654,10 @@ export async function stopMcpBridge(termId: string): Promise<McpBridgeState> {
   runtimes.delete(termId)
   if (current) {
     await current.handler.close().catch(() => undefined)
-    await new Promise<void>((resolve) => current.http.close(() => resolve()))
+    // Без closeAllConnections close() ждёт, пока клиент сам закроет открытые (keep-alive, SSE) соединения
+    const closed = new Promise<void>((resolve) => current.http.close(() => resolve()))
+    current.http.closeAllConnections()
+    await closed
     audit.unshift({ ts: Date.now(), tool: 'bridge', ok: true, detail: 'Доступ закрыт' })
     audit.splice(100)
   }
@@ -747,6 +754,16 @@ export async function smokeMcpParallel(): Promise<number> {
   }
 }
 
+/** split view: соединение перешло к другой панели — мост продолжает работать под её id. */
+export function moveMcpToTerm(fromTermId: string, toTermId: string): void {
+  const current = runtimes.get(fromTermId)
+  if (!current || runtimes.has(toTermId)) return
+  runtimes.delete(fromTermId)
+  current.access.termId = toTermId
+  runtimes.set(toTermId, current)
+  emitState()
+}
+
 export function revokeMcpForTerm(termId: string): void {
   if (runtimes.has(termId)) void stopMcpBridge(termId)
 }
@@ -755,6 +772,7 @@ export function closeMcpBridge(): void {
   for (const current of runtimes.values()) {
     void current.handler.close()
     current.http.close()
+    current.http.closeAllConnections()
   }
   runtimes.clear()
 }

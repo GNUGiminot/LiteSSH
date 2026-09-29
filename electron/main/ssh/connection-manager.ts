@@ -2,7 +2,8 @@ import { Client, type ClientChannel } from 'ssh2'
 import { BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
 import { readFileSync, createWriteStream, type WriteStream } from 'fs'
-import { getKnownHostKey, saveKnownHostKey } from '../db'
+import { StringDecoder } from 'string_decoder'
+import { getKnownHostKey, listKnownHostKeyTypes, saveKnownHostKey } from '../db'
 import { parseKeyType, fingerprintOf } from './host-keys'
 import type { HostKeyPrompt } from '@shared/types'
 
@@ -38,7 +39,19 @@ interface ActiveTerm {
   jumpClients?: Client[]
   /** Активный лог сессии (вывод пишется без ANSI-кодов) */
   logStream?: WriteStream
+  logDecoder?: StringDecoder
+  /** Renderer смонтировал терминал; до этого вывод копится в backlog, чтобы не потерять баннер. */
+  attached: boolean
+  backlog: Buffer[]
+  backlogBytes: number
 }
+
+/** Предел вывода, который держим до монтирования терминала. */
+const MAX_BACKLOG_BYTES = 2 * 1024 * 1024
+/** Время на установку соединения без учёта ожидания ответа в диалоге ключа хоста. */
+const READY_TIMEOUT_MS = 20_000
+/** Сколько ждём решения пользователя по ключу хоста. */
+const HOST_KEY_PROMPT_MS = 120_000
 
 const terms = new Map<string, ActiveTerm>()
 /** Сколько панелей (shell-каналов) держат общий SSH-клиент — для split view. */
@@ -46,13 +59,62 @@ const clientRefs = new Map<Client, number>()
 const hostKeyResolvers = new Map<string, (accept: boolean) => void>()
 /** Слушатели закрытия терминала (для остановки туннелей). */
 const closeListeners = new Set<(termId: string) => void>()
+/** Слушатели передачи соединения другой панели (split: закрылась главная панель, клиент жив). */
+const moveListeners = new Set<(fromTermId: string, toTermId: string) => void>()
 
 export function onTermClosed(cb: (termId: string) => void): void {
   closeListeners.add(cb)
 }
 
+export function onTermMoved(cb: (fromTermId: string, toTermId: string) => void): void {
+  moveListeners.add(cb)
+}
+
 function notifyClosed(termId: string): void {
   for (const cb of closeListeners) cb(termId)
+}
+
+function notifyMoved(fromTermId: string, toTermId: string): void {
+  for (const cb of moveListeners) cb(fromTermId, toTermId)
+}
+
+/**
+ * Таймаут подключения, который замирает, пока открыт диалог ключа хоста.
+ * Встроенный readyTimeout ssh2 тикает и во время диалога — соединение обрывалось,
+ * если пользователь читал отпечаток дольше 20 секунд.
+ */
+function readyWatchdog(onTimeout: () => void) {
+  let remaining = READY_TIMEOUT_MS
+  let startedAt = 0
+  let timer: NodeJS.Timeout | undefined
+  let finished = false
+  const start = () => {
+    if (finished || timer) return
+    startedAt = Date.now()
+    timer = setTimeout(() => {
+      finished = true
+      onTimeout()
+    }, remaining)
+  }
+  start()
+  return {
+    pause() {
+      if (!timer) return
+      clearTimeout(timer)
+      timer = undefined
+      remaining = Math.max(2_000, remaining - (Date.now() - startedAt))
+    },
+    resume: start,
+    clear() {
+      finished = true
+      if (timer) clearTimeout(timer)
+      timer = undefined
+    }
+  }
+}
+
+function timeoutError(host: string): Error {
+  return new Error(`Сервер ${host} не ответил за ${READY_TIMEOUT_MS / 1000} с (таймаут подключения)`)
 }
 
 /**
@@ -76,34 +138,36 @@ async function openViaJump(
 
   return new Promise((resolve, reject) => {
     const jumpClient = new Client()
-    const cleanup = () => {
+    let settled = false
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      watchdog.clear()
       jumpClient.end()
       for (const c of chain) c.end()
+      reject(error)
     }
+    const watchdog = readyWatchdog(() => fail(timeoutError(jump.host)))
     jumpClient.on('ready', () => {
+      watchdog.clear()
       jumpClient.forwardOut('127.0.0.1', 0, target.host, target.port, (err, stream) => {
-        if (err) {
-          cleanup()
-          return reject(new Error(`Бастион ${jump.host} не смог открыть канал к ${target.host}: ${err.message}`))
-        }
+        if (err) return fail(new Error(`Бастион ${jump.host} не смог открыть канал к ${target.host}: ${err.message}`))
+        settled = true
         // порядок: внешний бастион(ы) ... этот бастион
         resolve({ sock: stream, clients: [...chain, jumpClient] })
       })
     })
-    jumpClient.on('error', (err) => {
-      cleanup()
-      reject(new Error(`Ошибка бастиона ${jump.host}: ${err.message}`))
-    })
+    jumpClient.on('error', (err) => fail(new Error(`Ошибка бастиона ${jump.host}: ${err.message}`)))
+    jumpClient.on('close', () => fail(new Error(`Бастион ${jump.host} закрыл соединение`)))
     jumpClient.on('keyboard-interactive', (_n, _i, _l, prompts, finish) => {
       finish(prompts.map(() => jump.password ?? ''))
     })
     try {
-      const cfg = buildConfig(win, jump)
+      const cfg = buildConfig(win, jump, (phase) => (phase === 'start' ? watchdog.pause() : watchdog.resume()))
       if (jumpSock) (cfg as { sock?: NodeJS.ReadWriteStream }).sock = jumpSock
       jumpClient.connect(cfg)
     } catch (e) {
-      cleanup()
-      reject(e as Error)
+      fail(e as Error)
     }
   })
 }
@@ -126,13 +190,16 @@ async function verifyHostKey(win: BrowserWindow, profile: ConnectProfile, key: B
   const known = getKnownHostKey(profile.host, profile.port, keyType)
   if (known === fingerprint) return true
 
+  // Сервер предъявил ключ другого типа, чем сохранённые — это тоже смена ключа, а не новый хост
+  const otherTypes = listKnownHostKeyTypes(profile.host, profile.port).filter((type) => type !== keyType)
   const prompt: HostKeyPrompt = {
     requestId: randomUUID(),
     host: profile.host,
     port: profile.port,
     keyType,
     fingerprint,
-    changed: known !== undefined
+    changed: known !== undefined || otherTypes.length > 0,
+    ...(known === undefined && otherTypes.length ? { knownKeyTypes: otherTypes } : {})
   }
   const accepted = await new Promise<boolean>((resolve) => {
     hostKeyResolvers.set(prompt.requestId, resolve)
@@ -141,7 +208,7 @@ async function verifyHostKey(win: BrowserWindow, profile: ConnectProfile, key: B
     // Never hang a connection forever on an unanswered dialog
     setTimeout(() => {
       if (hostKeyResolvers.delete(prompt.requestId)) resolve(false)
-    }, 120_000)
+    }, HOST_KEY_PROMPT_MS)
   })
   if (accepted) saveKnownHostKey(profile.host, profile.port, keyType, fingerprint)
   return accepted
@@ -156,7 +223,8 @@ function buildConfig(
     host: profile.host,
     port: profile.port,
     username: profile.username,
-    readyTimeout: 20_000,
+    // Таймаут ведёт readyWatchdog: он не считает время ожидания в диалоге ключа хоста
+    readyTimeout: 0,
     keepaliveInterval: 15_000,
     keepaliveCountMax: 3,
     tryKeyboard: true,
@@ -167,7 +235,10 @@ function buildConfig(
           onHostKey?.('done')
           verify(ok)
         })
-        .catch(() => verify(false))
+        .catch(() => {
+          onHostKey?.('done')
+          verify(false)
+        })
     }
   }
   if (profile.authType === 'password') {
@@ -205,22 +276,16 @@ export function getClient(termId: string): Client | undefined {
 }
 
 /** Выполнить команду на уже открытом клиенте (для метрик и т.п.), без нового подключения. */
-export function execOnClient(
+export async function execOnClient(
   termId: string,
-  command: string
+  command: string,
+  timeoutMs = 30_000
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const client = terms.get(termId)?.client
-    if (!client) return reject(new Error('SSH-сессия не активна'))
-    client.exec(command, (err, stream) => {
-      if (err) return reject(err)
-      let stdout = ''
-      let stderr = ''
-      stream.on('data', (d: Buffer) => (stdout += d.toString()))
-      stream.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
-      stream.on('close', (code: number) => resolve({ code: code ?? 0, stdout, stderr }))
-    })
+  const { code, stdout, stderr } = await execOnClientLimited(termId, command, {
+    timeoutMs,
+    maxOutputBytes: 4 * 1024 * 1024
   })
+  return { code, stdout, stderr }
 }
 
 /** Ограниченный exec для внешних инструментов: таймаут и жёсткий предел буфера вывода. */
@@ -291,22 +356,32 @@ export function execOnClientLimited(
   })
 }
 
-/** Одноразовое подключение для exec-команды (деплой ключей и т.п.). */
-export function execOnProfile(
+/** Одноразовое подключение для exec-команды (деплой ключей и т.п.), в том числе через бастион. */
+export async function execOnProfile(
   win: BrowserWindow,
   profile: ConnectProfile,
   command: string
 ): Promise<{ code: number; stdout: string; stderr: string }> {
+  const via = profile.jump
+    ? await openViaJump(win, profile.jump, { host: profile.host, port: profile.port })
+    : undefined
   return new Promise((resolve, reject) => {
     const client = new Client()
     let settled = false
+    const closeAll = () => {
+      client.end()
+      via?.clients.forEach((c) => c.end())
+    }
     const fail = (err: Error) => {
       if (settled) return
       settled = true
-      client.end()
+      watchdog.clear()
+      closeAll()
       reject(err)
     }
+    const watchdog = readyWatchdog(() => fail(timeoutError(profile.host)))
     client.on('ready', () => {
+      watchdog.clear()
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
         let stdout = ''
@@ -314,38 +389,58 @@ export function execOnProfile(
         stream.on('data', (d: Buffer) => (stdout += d.toString()))
         stream.stderr.on('data', (d: Buffer) => (stderr += d.toString()))
         stream.on('close', (code: number) => {
+          if (settled) return
           settled = true
-          client.end()
+          closeAll()
           resolve({ code: code ?? 0, stdout, stderr })
         })
       })
     })
     client.on('error', fail)
+    client.on('close', () => fail(new Error('Соединение закрыто до завершения команды')))
     client.on('keyboard-interactive', (_n, _i, _l, prompts, finish) => {
       finish(prompts.map(() => profile.password ?? ''))
     })
     try {
-      client.connect(buildConfig(win, profile))
+      const cfg = buildConfig(win, profile, (phase) => (phase === 'start' ? watchdog.pause() : watchdog.resume()))
+      if (via) (cfg as { sock?: NodeJS.ReadWriteStream }).sock = via.sock
+      client.connect(cfg)
     } catch (e) {
       fail(e as Error)
     }
   })
 }
 
+function endLog(t: ActiveTerm): void {
+  if (!t.logStream) return
+  const tail = t.logDecoder?.end()
+  if (tail) t.logStream.write(stripAnsi(tail))
+  t.logStream.end()
+  t.logStream = undefined
+  t.logDecoder = undefined
+}
+
 /** Освобождает одну панель; общий клиент закрывается только когда снята последняя ссылка. */
 function releasePane(termId: string): void {
   const t = terms.get(termId)
   if (!t) return
-  t.logStream?.end()
+  endLog(t)
   terms.delete(termId)
-  notifyClosed(termId)
   const n = (clientRefs.get(t.client) ?? 1) - 1
   if (n <= 0) {
     clientRefs.delete(t.client)
+    notifyClosed(termId)
     t.client.end()
     t.jumpClients?.forEach((c) => c.end())
   } else {
     clientRefs.set(t.client, n)
+    // Соединение живо в других панелях: туннели, SFTP и MCP переходят к первой оставшейся
+    // (renderer так же продвигает первую оставшуюся панель в главную).
+    const heir = [...terms].find(([, other]) => other.client === t.client)
+    if (heir) {
+      heir[1].jumpClients ??= t.jumpClients
+      notifyMoved(termId, heir[0])
+    }
   }
   if (!t.win.isDestroyed()) t.win.webContents.send('term:exit', termId)
 }
@@ -356,7 +451,7 @@ function failClient(client: Client, message?: string): void {
   for (const [id, t] of [...terms]) {
     if (t.client !== client) continue
     jumps = jumps ?? t.jumpClients
-    t.logStream?.end()
+    endLog(t)
     terms.delete(id)
     notifyClosed(id)
     if (!t.win.isDestroyed()) t.win.webContents.send('term:exit', id, message)
@@ -378,8 +473,16 @@ function wireShellStream(
     if (!pending.length) return
     const data = Buffer.concat(pending)
     pending = []
-    const log = terms.get(termId)?.logStream
-    if (log) log.write(stripAnsi(data.toString('utf8')))
+    const t = terms.get(termId)
+    if (t?.logStream && t.logDecoder) t.logStream.write(stripAnsi(t.logDecoder.write(data)))
+    if (t && !t.attached) {
+      t.backlog.push(data)
+      t.backlogBytes += data.length
+      while (t.backlogBytes > MAX_BACKLOG_BYTES && t.backlog.length > 1) {
+        t.backlogBytes -= t.backlog.shift()!.length
+      }
+      return
+    }
     if (!win.isDestroyed()) win.webContents.send('term:data', termId, data)
   }
   const onData = (d: Buffer) => {
@@ -394,6 +497,21 @@ function wireShellStream(
   stream.on('close', () => releasePane(termId))
 }
 
+/** Renderer смонтировал терминал: отдаём накопленный вывод и дальше шлём напрямую. */
+export function attachTerm(termId: string): void {
+  const t = terms.get(termId)
+  if (!t || t.attached) return
+  t.attached = true
+  const data = Buffer.concat(t.backlog)
+  t.backlog = []
+  t.backlogBytes = 0
+  if (data.length && !t.win.isDestroyed()) t.win.webContents.send('term:data', termId, data)
+}
+
+function newTerm(client: Client, stream: ClientChannel, win: BrowserWindow, jumpClients?: Client[]): ActiveTerm {
+  return { client, stream, win, jumpClients, attached: false, backlog: [], backlogBytes: 0 }
+}
+
 /** Открывает ещё один shell-канал на уже существующем соединении (для split view). */
 export function openExtraShell(
   sourceTermId: string,
@@ -406,7 +524,7 @@ export function openExtraShell(
     client.shell({ term: 'xterm-256color', cols: size.cols, rows: size.rows }, (err, stream) => {
       if (err) return reject(err)
       const termId = randomUUID()
-      terms.set(termId, { client, stream, win })
+      terms.set(termId, newTerm(client, stream, win))
       clientRefs.set(client, (clientRefs.get(client) ?? 1) + 1)
       wireShellStream(win, termId, stream)
       resolve({ termId })
@@ -439,17 +557,21 @@ export function connect(
     const fail = (err: Error) => {
       if (settled) return
       settled = true
+      watchdog.clear()
       emit(activeStage, 'error', err.message)
       client.end()
       jumpClients?.forEach((c) => c.end())
       reject(err)
     }
+    // Таймаут считается с начала попытки, включая бастионы, но без времени в диалоге ключа
+    const watchdog = readyWatchdog(() => fail(timeoutError(profile.host)))
 
     // Стадии по событиям ssh2: hostVerifier → handshake → auth → ready → shell
     client.on('handshake', () => {
       emit('auth', 'active')
     })
     client.on('ready', () => {
+      watchdog.clear()
       emit('auth', 'done')
       emit('shell', 'active')
       client.shell(
@@ -461,7 +583,11 @@ export function connect(
         },
         (err, stream) => {
           if (err) return fail(err)
-          terms.set(termId, { client, stream, win, jumpClients })
+          if (settled) {
+            stream.close()
+            return
+          }
+          terms.set(termId, newTerm(client, stream, win, jumpClients))
           clientRefs.set(client, 1)
           wireShellStream(win, termId, stream)
           emit('shell', 'done')
@@ -481,16 +607,21 @@ export function connect(
     })
 
     client.on('close', () => {
+      // Сервер может закрыть сокет без события error — попытка не должна висеть до таймаута
+      if (!settled) return fail(new Error('Сервер закрыл соединение до завершения подключения'))
       if ([...terms.values()].some((t) => t.client === client)) failClient(client)
     })
 
     const startConnect = () => {
+      if (settled) return
       try {
         const cfg = buildConfig(win, profile, (phase) => {
           if (phase === 'start') {
+            watchdog.pause()
             emit('connect', 'done')
             emit('hostkey', 'active')
           } else {
+            watchdog.resume()
             emit('hostkey', 'done')
           }
         })
@@ -506,10 +637,17 @@ export function connect(
 
     let pendingSock: NodeJS.ReadWriteStream | undefined
     if (profile.jump) {
+      // Бастионы ведут собственные таймауты; общий на время их подключения приостанавливаем
+      watchdog.pause()
       openViaJump(win, profile.jump, { host: profile.host, port: profile.port })
         .then(({ sock, clients }) => {
           jumpClients = clients
+          if (settled) {
+            clients.forEach((c) => c.end())
+            return
+          }
           pendingSock = sock
+          watchdog.resume()
           startConnect()
         })
         .catch(fail)
@@ -530,18 +668,17 @@ export function isLogging(termId: string): boolean {
 export function startLogging(termId: string, filePath: string): void {
   const t = terms.get(termId)
   if (!t) throw new Error('Сессия не активна')
-  t.logStream?.end()
+  endLog(t)
   const stream = createWriteStream(filePath, { flags: 'a' })
   stream.write(`\n===== LiteSSH log ${new Date().toISOString()} =====\n`)
   t.logStream = stream
+  // Декодер не рвёт многобайтные символы UTF-8 на границе пакетов
+  t.logDecoder = new StringDecoder('utf8')
 }
 
 export function stopLogging(termId: string): void {
   const t = terms.get(termId)
-  if (t?.logStream) {
-    t.logStream.end()
-    t.logStream = undefined
-  }
+  if (t) endLog(t)
 }
 
 export function resizeTerm(termId: string, cols: number, rows: number): void {
@@ -551,7 +688,7 @@ export function resizeTerm(termId: string, cols: number, rows: number): void {
 export function closeTerm(termId: string): void {
   const t = terms.get(termId)
   if (!t) return
-  // завершаем поток панели; releasePane (по событию close) снимет ссылку и,
+  // завершаем поток панели; releasePane снимет ссылку и,
   // если это была последняя панель, закроет общий клиент
   t.stream.end()
   releasePane(termId)

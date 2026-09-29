@@ -16,9 +16,24 @@ export async function getSftp(termId: string): Promise<SFTPWrapper> {
   const sftp = await new Promise<SFTPWrapper>((resolve, reject) =>
     client.sftp((err, s) => (err ? reject(err) : resolve(s)))
   )
-  sftp.on('close', () => sftpMap.delete(termId))
+  // удаляем по значению: после moveSftpToTerm канал живёт под другим termId
+  sftp.on('close', () => {
+    for (const [key, value] of sftpMap) if (value === sftp) sftpMap.delete(key)
+  })
   sftpMap.set(termId, sftp)
   return sftp
+}
+
+/** split view: соединение перешло к другой панели — SFTP-канал и очередь передач тоже. */
+export function moveSftpToTerm(fromTermId: string, toTermId: string): void {
+  const sftp = sftpMap.get(fromTermId)
+  if (sftp) {
+    sftpMap.delete(fromTermId)
+    if (!sftpMap.has(toTermId)) sftpMap.set(toTermId, sftp)
+  }
+  // Очередь остаётся под прежним ключом (идущий цикл её доработает), а задания
+  // открывают SFTP-канал по termId из дескриптора — он теперь указывает на живую панель
+  for (const d of descriptors.values()) if (d.termId === fromTermId) d.termId = toTermId
 }
 
 // -------- promisified sftp primitives --------
@@ -68,6 +83,7 @@ function chmodRemote(sftp: SFTPWrapper, path: string, mode: number) {
 const S_IFMT = 0xf000
 const S_IFDIR = 0x4000
 const S_IFLNK = 0xa000
+const S_IFREG = 0x8000
 
 function permString(mode: number): string {
   const chars = 'rwxrwxrwx'
@@ -295,7 +311,7 @@ async function pumpTransferQueue(termId: string): Promise<void> {
       try {
         const resume = t.resumeRequested
         t.resumeRequested = false
-        transferSftp = await openTransferSftp(termId)
+        transferSftp = await openTransferSftp(d.termId)
         await runTransfer(transferSftp, d, t, resume)
       } catch (e) {
         finishTransfer(t, 'error', (e as Error).message)
@@ -647,8 +663,10 @@ async function runTransfer(
   emit(t, true)
   try {
     if (d.kind === 'file') {
+      // stat, а не sftpSize: при ошибке доступа нельзя считать размер нулевым — иначе
+      // скачивался пустой файл и передача помечалась успешной
       const size =
-        d.direction === 'upload' ? (await fsp.stat(d.src)).size : await sftpSize(sftp, d.src)
+        d.direction === 'upload' ? (await fsp.stat(d.src)).size : (await statRemote(sftp, d.src)).size
       t.info.total = size
       emit(t, true)
       const onP = (done: number) => {
@@ -816,19 +834,36 @@ async function walkRemote(
 ): Promise<{ files: { abs: string; rel: string; size: number }[]; dirs: string[] }> {
   const files: { abs: string; rel: string; size: number }[] = []
   const dirs: string[] = []
-  async function walk(dir: string): Promise<void> {
+  // Символические ссылки раскрываем (как scp -r); visited защищает от циклов
+  const visited = new Set<string>()
+  async function walk(dir: string, rel: string): Promise<void> {
+    const real = await realpath(sftp, dir).catch(() => dir)
+    if (visited.has(real)) return
+    visited.add(real)
     const entries = await readdir(sftp, dir)
     for (const e of entries) {
       const abs = posix.join(dir, e.filename)
-      if ((e.attrs.mode & S_IFMT) === S_IFDIR) {
-        dirs.push(posix.relative(root, abs))
-        await walk(abs)
-      } else if ((e.attrs.mode & S_IFMT) !== S_IFLNK) {
-        files.push({ abs, rel: posix.relative(root, abs), size: e.attrs.size })
+      const relPath = rel ? posix.join(rel, e.filename) : e.filename
+      let fmt = e.attrs.mode & S_IFMT
+      let size = e.attrs.size
+      if (fmt === S_IFLNK) {
+        try {
+          const target = await statRemote(sftp, abs)
+          fmt = target.mode & S_IFMT
+          size = target.size
+        } catch {
+          continue // битая ссылка — копировать нечего
+        }
+      }
+      if (fmt === S_IFDIR) {
+        dirs.push(relPath)
+        await walk(abs, relPath)
+      } else if (fmt === S_IFREG) {
+        files.push({ abs, rel: relPath, size })
       }
     }
   }
-  await walk(root)
+  await walk(root, '')
   return { files, dirs }
 }
 

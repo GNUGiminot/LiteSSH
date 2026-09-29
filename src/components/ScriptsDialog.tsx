@@ -227,7 +227,7 @@ export function ScriptsDialog({ open, onClose }: Props) {
               </Dialog.Close>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+            <div className="min-h-0 flex-1 overflow-hidden bg-white dark:bg-[#1e1e1e]">
               {sel ? (
                 <Suspense
                   fallback={

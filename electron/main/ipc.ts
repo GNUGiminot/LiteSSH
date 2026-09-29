@@ -25,7 +25,8 @@ import {
   getVaultMeta,
   setVaultMeta,
   clearVaultMeta,
-  reencryptSecrets
+  reencryptSecrets,
+  inTransaction
 } from './db'
 import {
   connect,
@@ -35,6 +36,7 @@ import {
   respondHostKey,
   execOnProfile,
   openExtraShell,
+  attachTerm,
   type ConnectProfile
 } from './ssh/connection-manager'
 import {
@@ -49,7 +51,8 @@ import {
   download,
   cancelTransfer,
   resumeTransfer,
-  listTransfers
+  listTransfers,
+  moveSftpToTerm
 } from './ssh/sftp-manager'
 import {
   listSnippets,
@@ -72,18 +75,20 @@ import {
   startTunnel,
   stopTunnel,
   stopTunnelsForTerm,
+  moveTunnelsToTerm,
   tunnelStates,
   autostartTunnels,
   startEphemeralLocal
 } from './ssh/tunnel-manager'
 import { spawn } from 'child_process'
-import { onTermClosed, startLogging, stopLogging, isLogging } from './ssh/connection-manager'
+import { onTermClosed, onTermMoved, startLogging, stopLogging, isLogging } from './ssh/connection-manager'
 import { getHostMetrics } from './metrics'
 import {
   spawnPty,
   writePty,
   resizePty,
   closePty,
+  attachPty,
   availableShells
 } from './pty-manager'
 import type { TunnelConfig, TunnelType } from '@shared/types'
@@ -101,13 +106,14 @@ import { exportSessionsJson, importSessionsJson, importSshConfig } from './sessi
 import {
   getMcpBridgeState,
   listMcpBridges,
+  moveMcpToTerm,
   revokeMcpForTerm,
   rotateMcpToken,
   startMcpBridge,
   stopMcpBridge
 } from './mcp-bridge'
 import { exportMcpActivity, listMcpActivity } from './mcp-activity'
-import { inspectGitHubProject, loginGitHub, publishGitHubProject } from './github'
+import { checkRemoteRepository, inspectGitHubProject, loginGitHub, publishGitHubProject } from './github'
 import type {
   ConnectRequest,
   ConnectResult,
@@ -167,6 +173,12 @@ const McpBridgeSchema = z.object({
 const GitHubSourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('local'), path: z.string().min(1).max(4096) }),
   z.object({ kind: z.literal('remote'), path: z.string().min(1).max(4096), termId: z.string().min(1).max(200) })
+])
+
+/** Для проверки ссылки папка может быть ещё не выбрана. */
+const GitHubRemoteCheckSourceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('local'), path: z.string().max(4096) }),
+  z.object({ kind: z.literal('remote'), path: z.string().max(4096), termId: z.string().min(1).max(200) })
 ])
 
 const GitHubPublishSchema = z.object({
@@ -246,6 +258,12 @@ export function registerIpc(): void {
   onTermClosed((termId) => {
     stopTunnelsForTerm(termId)
     revokeMcpForTerm(termId)
+  })
+  // split view: закрылась главная панель, соединение живо — привязки переходят к оставшейся
+  onTermMoved((fromTermId, toTermId) => {
+    moveTunnelsToTerm(fromTermId, toTermId)
+    moveSftpToTerm(fromTermId, toTermId)
+    moveMcpToTerm(fromTermId, toTermId)
   })
 
   // ---- sessions ----
@@ -344,6 +362,7 @@ export function registerIpc(): void {
     resizeTerm(termId, cols, rows)
   )
   ipcMain.on('term:close', (_e, termId: string) => closeTerm(termId))
+  ipcMain.on('term:attach', (_e, termId: string) => attachTerm(String(termId)))
 
   ipcMain.handle('term:is-logging', (_e, termId: string): boolean => isLogging(String(termId)))
   ipcMain.handle('term:toggle-log', async (e, termId: string): Promise<OpResult> => {
@@ -461,6 +480,14 @@ export function registerIpc(): void {
   ipcMain.handle('github:inspect', (_e, raw: unknown) =>
     guard(async () => ({ state: await inspectGitHubProject(GitHubSourceSchema.parse(raw) as GitHubSource) }))
   )
+  ipcMain.handle('github:check-remote', (_e, rawSource: unknown, rawUrl: unknown) =>
+    guard(async () => ({
+      check: await checkRemoteRepository(
+        GitHubRemoteCheckSourceSchema.parse(rawSource) as GitHubSource,
+        z.string().min(1).max(1000).parse(rawUrl)
+      )
+    }))
+  )
   ipcMain.handle('github:login', () => guard(() => loginGitHub()))
   ipcMain.handle('github:publish', (e, raw: unknown) => {
     const win = BrowserWindow.fromWebContents(e.sender)
@@ -489,10 +516,14 @@ export function registerIpc(): void {
     if (!password || password.length < 4) return { ok: false, error: 'Пароль слишком короткий' }
     try {
       const meta = prepareMaster(String(password)) // режим master + ключ в памяти
-      reencryptSecrets(reencryptOne) // keychain → master
-      setVaultMeta(meta)
+      // Секреты и мета меняются одной транзакцией: при сбое БД остаётся в режиме keychain
+      inTransaction(() => {
+        reencryptSecrets(reencryptOne) // keychain → master
+        setVaultMeta(meta)
+      })
       return { ok: true }
     } catch (e) {
+      disableMaster() // откат режима в памяти — иначе новые секреты шифровались бы ключом без сохранённой меты
       return { ok: false, error: (e as Error).message }
     }
   })
@@ -511,9 +542,11 @@ export function registerIpc(): void {
       return { ok: false, error: 'Неверный мастер-пароль' }
     }
     try {
-      reencryptSecrets(toKeychain) // master → keychain (ключ ещё в памяти)
+      inTransaction(() => {
+        reencryptSecrets(toKeychain) // master → keychain (ключ ещё в памяти)
+        clearVaultMeta()
+      })
       disableMaster()
-      clearVaultMeta()
       return { ok: true }
     } catch (e) {
       return { ok: false, error: (e as Error).message }
@@ -621,6 +654,7 @@ export function registerIpc(): void {
     resizePty(ptyId, cols, rows)
   )
   ipcMain.on('pty:close', (_e, ptyId: string) => closePty(ptyId))
+  ipcMain.on('pty:attach', (_e, ptyId: string) => attachPty(String(ptyId)))
 
   // ---- local fs ----
   ipcMain.handle('fs:home', () => localFs.home())

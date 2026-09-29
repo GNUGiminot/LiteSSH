@@ -119,6 +119,8 @@ export interface HostKeyPrompt {
   fingerprint: string
   /** True when the server presented a DIFFERENT key than the one stored (possible MITM). */
   changed: boolean
+  /** Типы ключей, ранее сохранённые для этого хоста (если сервер сменил тип ключа). */
+  knownKeyTypes?: string[]
 }
 
 export interface FileEntry {
@@ -260,6 +262,30 @@ export interface GitHubRepoState {
   truncated?: boolean
 }
 
+export type GitRemoteStatus =
+  | 'ok'
+  | 'empty'
+  | 'not-found'
+  | 'auth'
+  | 'host-key'
+  | 'network'
+  | 'no-git'
+  | 'error'
+
+/** Результат проверки ссылки на удалённый репозиторий (git ls-remote без интерактивных запросов). */
+export interface GitRemoteCheck {
+  status: GitRemoteStatus
+  message: string
+  host: string
+  webUrl: string
+  createUrl?: string
+  defaultBranch?: string
+  branches: string[]
+  branchesTruncated?: boolean
+  /** Откуда проверяли: с этого компьютера или с сервера SSH-сессии */
+  checkedFrom: GitHubSourceKind
+}
+
 export type GitHubPublishPhase =
   | 'prepare'
   | 'gitignore'
@@ -340,6 +366,8 @@ export interface LiteSSHApi {
     write(termId: string, data: string): void
     resize(termId: string, cols: number, rows: number): void
     close(termId: string): void
+    /** Терминал смонтирован: main отдаёт накопленный до этого вывод (баннер, приглашение). */
+    attach(termId: string): void
     isLogging(termId: string): Promise<boolean>
     toggleLog(termId: string): Promise<OpResult & { logging?: boolean }>
   }
@@ -406,6 +434,7 @@ export interface LiteSSHApi {
     write(ptyId: string, data: string): void
     resize(ptyId: string, cols: number, rows: number): void
     close(ptyId: string): void
+    attach(ptyId: string): void
     shells(): Promise<{ label: string; cmd: string }[]>
     onData(cb: (ptyId: string, data: string) => void): () => void
     onExit(cb: (ptyId: string) => void): () => void
@@ -439,6 +468,7 @@ export interface LiteSSHApi {
   github: {
     pickDirectory(): Promise<string | null>
     inspect(source: GitHubSource): Promise<OpResult & { state?: GitHubRepoState }>
+    checkRemote(source: GitHubSource, repositoryUrl: string): Promise<OpResult & { check?: GitRemoteCheck }>
     login(): Promise<OpResult>
     publish(request: GitHubPublishRequest): Promise<OpResult & { url?: string; log?: string[] }>
     onProgress(cb: (progress: GitHubProgress) => void): () => void

@@ -57,8 +57,13 @@ export function MetricsDialog({ open, termId, title, onClose }: Props) {
   useEffect(() => {
     if (!open || !termId) return
     let cancelled = false
+    let inFlight = false
     const poll = async () => {
-      const res = await window.api.metrics.get(termId)
+      // Не запускаем новый замер, пока не пришёл предыдущий: на медленном сервере запросы
+      // копились и занимали каналы SSH (лимит sshd MaxSessions)
+      if (inFlight) return
+      inFlight = true
+      const res = await window.api.metrics.get(termId).finally(() => { inFlight = false })
       if (cancelled) return
       if (res.ok && res.memTotal !== undefined) {
         setData(res as HostMetrics)

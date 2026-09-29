@@ -133,7 +133,7 @@ export function McpActivityPanel({ open, onClose }: Props) {
         {events.map((event) => (
           <button key={event.id} onClick={() => setSelectedId(event.id)} className={`block w-full border-b border-surface-3/60 px-3 py-2 text-left hover:bg-surface-2 ${selectedId === event.id ? 'bg-surface-2' : ''}`}>
             <div className="flex items-center gap-2 text-[11px]">
-              <span className={event.status === 'error' ? 'text-red-400' : event.status === 'running' ? 'text-amber-300' : 'text-emerald-400'}>●</span>
+              <span className={event.status === 'error' ? 'text-red-400' : event.status === 'running' ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-400'}>●</span>
               <span className="min-w-0 flex-1 truncate font-mono">{event.tool}</span>
               <span className="text-content-3">{duration(event, now)}</span>
             </div>
@@ -157,7 +157,7 @@ export function McpActivityPanel({ open, onClose }: Props) {
               <button onClick={() => setShowOutput(!showOutput)} className="flex items-center gap-1 text-accent">{showOutput ? <EyeOff size={12} /> : <Eye size={12} />} {showOutput ? 'Скрыть вывод' : 'Показать stdout / stderr'}</button>
               {showOutput && <div className="space-y-1">
                 <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-1 p-2 font-mono text-[10px]">stdout: {selected.stdout ?? 'нет сохранённого вывода'}</pre>
-                <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-1 p-2 font-mono text-[10px] text-amber-200">stderr: {selected.stderr ?? 'нет сохранённого вывода'}</pre>
+                <pre className="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-surface-1 p-2 font-mono text-[10px] text-amber-700 dark:text-amber-200">stderr: {selected.stderr ?? 'нет сохранённого вывода'}</pre>
                 <p className="text-content-3">Вывод доступен только в памяти текущего запуска, не включается в экспорт.</p>
               </div>}
             </div>

@@ -28,7 +28,7 @@ export function TabsBar() {
           }}
           className={`group flex h-8 max-w-52 cursor-pointer items-center gap-2 rounded-t-md border-x border-t px-3 text-xs transition-colors ${
             tab.termId === activeId
-              ? 'border-surface-3 bg-[#0d1117] text-content-1'
+              ? 'border-surface-3 bg-surface-0 text-content-1'
               : 'border-transparent bg-transparent text-content-2 hover:bg-surface-2'
           }`}
         >

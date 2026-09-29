@@ -22,7 +22,13 @@ function getPty(): typeof import('node-pty') | null {
 interface ActivePty {
   pty: IPty
   win: BrowserWindow
+  /** До монтирования терминала вывод копится, иначе первое приглашение теряется. */
+  attached: boolean
+  backlog: string[]
+  backlogChars: number
 }
+
+const MAX_BACKLOG_CHARS = 1024 * 1024
 
 const ptys = new Map<string, ActivePty>()
 
@@ -63,14 +69,33 @@ export function spawnPty(
     env: process.env as Record<string, string>
   })
   proc.onData((data) => {
+    const entry = ptys.get(ptyId)
+    if (entry && !entry.attached) {
+      entry.backlog.push(data)
+      entry.backlogChars += data.length
+      while (entry.backlogChars > MAX_BACKLOG_CHARS && entry.backlog.length > 1) {
+        entry.backlogChars -= entry.backlog.shift()!.length
+      }
+      return
+    }
     if (!win.isDestroyed()) win.webContents.send('pty:data', ptyId, data)
   })
   proc.onExit(() => {
     ptys.delete(ptyId)
     if (!win.isDestroyed()) win.webContents.send('pty:exit', ptyId)
   })
-  ptys.set(ptyId, { pty: proc, win })
+  ptys.set(ptyId, { pty: proc, win, attached: false, backlog: [], backlogChars: 0 })
   return { ptyId }
+}
+
+export function attachPty(ptyId: string): void {
+  const entry = ptys.get(ptyId)
+  if (!entry || entry.attached) return
+  entry.attached = true
+  const data = entry.backlog.join('')
+  entry.backlog = []
+  entry.backlogChars = 0
+  if (data && !entry.win.isDestroyed()) entry.win.webContents.send('pty:data', ptyId, data)
 }
 
 export function writePty(ptyId: string, data: string): void {

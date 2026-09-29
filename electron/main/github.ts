@@ -1,5 +1,6 @@
 import { spawn } from 'child_process'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { homedir } from 'os'
 import { join, resolve } from 'path'
 import { posix } from 'path'
 import type { BrowserWindow } from 'electron'
@@ -9,8 +10,11 @@ import type {
   GitHubPublishRequest,
   GitHubRepoState,
   GitHubSource,
-  GitIgnorePreset
+  GitIgnorePreset,
+  GitRemoteCheck,
+  GitRemoteStatus
 } from '@shared/types'
+import { parseRepositoryUrl, repositoryIdentity, type ParsedRepositoryUrl } from '@shared/gitUrl'
 import { execOnClientLimited } from './ssh/connection-manager'
 import { sftpReadFile, sftpWriteFile } from './ssh/sftp-manager'
 
@@ -74,24 +78,96 @@ function sourceKey(source: GitHubSource): string {
 
 function cleanError(value: string): string {
   return value
-    .replace(/https:\/\/[^\s/@:]+:[^\s/@]+@github\.com/gi, 'https://github.com')
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1')
     .replace(/[\r\n]+/g, ' ')
     .trim()
     .slice(0, 1200)
+}
+
+/** Классификация ответа git при обращении к удалённому репозиторию (вывод в LC_ALL=C). */
+function remoteFailure(result: CommandResult): GitRemoteStatus {
+  if (result.code === 124) return 'network'
+  const lower = `${result.stderr}\n${result.stdout}`.toLowerCase()
+  if (result.code === 127 || lower.includes('git: command not found') || lower.includes('git: not found')) return 'no-git'
+  if (
+    lower.includes('repository not found') ||
+    lower.includes('does not appear to be a git repository') ||
+    lower.includes('could not be found') ||
+    lower.includes('not found') ||
+    lower.includes('error: 404')
+  ) return 'not-found'
+  if (lower.includes('host key verification failed')) return 'host-key'
+  if (
+    lower.includes('authentication failed') ||
+    lower.includes('could not read username') ||
+    lower.includes('could not read password') ||
+    lower.includes('terminal prompts disabled') ||
+    lower.includes('permission denied') ||
+    lower.includes('access denied') ||
+    lower.includes('invalid username or password') ||
+    lower.includes('error: 401') ||
+    lower.includes('error: 403')
+  ) return 'auth'
+  if (
+    lower.includes('could not resolve host') ||
+    lower.includes('could not resolve hostname') ||
+    lower.includes('connection timed out') ||
+    lower.includes('connection refused') ||
+    lower.includes('failed to connect') ||
+    lower.includes('network is unreachable') ||
+    lower.includes('no route to host') ||
+    lower.includes('ssl') ||
+    lower.includes('certificate')
+  ) return 'network'
+  return 'error'
+}
+
+function remoteFailureMessage(
+  status: GitRemoteStatus,
+  repository: ParsedRepositoryUrl,
+  kind: GitHubSource['kind'],
+  raw: string
+): string {
+  const where = kind === 'remote' ? 'с сервера' : 'с этого компьютера'
+  const isGitHubHttps = repository.host === 'github.com' && /^https?:/i.test(repository.gitUrl)
+  switch (status) {
+    case 'not-found':
+      return `Репозиторий ${repository.path} на ${repository.host} не найден. Создайте его на сайте${repository.createUrl ? ' (кнопка «Создать репозиторий»)' : ''} или проверьте ссылку и права доступа.`
+    case 'auth':
+      if (isGitHubHttps) {
+        return 'GitHub не отдал репозиторий: он ещё не создан или приватный. Если он приватный — нажмите «Войти через GitHub»; если не создан — создайте его на GitHub.'
+      }
+      return /^https?:/i.test(repository.gitUrl)
+        ? `${repository.host} требует вход: репозиторий ещё не создан или приватный. Если не создан — создайте его на сайте; если приватный — войдите через Git Credential Manager или используйте SSH-ссылку.`
+        : `Нет доступа по SSH к ${repository.host} ${where}: ключ не принят (Permission denied). Добавьте публичный ключ в аккаунт или используйте https-ссылку.`
+    case 'host-key':
+      return `Ключ хоста ${repository.host} неизвестен ${where}. Один раз выполните «ssh -T git@${repository.host}» в терминале и подтвердите отпечаток.`
+    case 'network':
+      return `Не удалось подключиться к ${repository.host} ${where}: нет сети, неверный адрес или истёк таймаут.`
+    default:
+      return raw || 'Не удалось проверить удалённый репозиторий'
+  }
 }
 
 function friendlyError(result: CommandResult, fallback: string): Error {
   const raw = cleanError(result.stderr || result.stdout || fallback)
   const lower = raw.toLowerCase()
   if (lower.includes('not a git repository')) return new Error('В выбранной папке ещё нет Git-репозитория')
-  if (lower.includes('authentication failed') || lower.includes('could not read username')) {
-    return new Error('GitHub не авторизован. Нажмите «Войти через GitHub» и повторите операцию.')
+  if (
+    lower.includes('authentication failed') ||
+    lower.includes('could not read username') ||
+    lower.includes('terminal prompts disabled')
+  ) {
+    return new Error('Нет авторизации в удалённом репозитории. Для GitHub нажмите «Войти через GitHub» и повторите операцию.')
   }
-  if (lower.includes('repository not found')) {
+  if (lower.includes('permission denied (publickey')) {
+    return new Error('SSH-ключ не принят удалённым репозиторием. Добавьте публичный ключ в аккаунт или используйте https-ссылку.')
+  }
+  if (lower.includes('repository not found') || lower.includes('does not appear to be a git repository')) {
     return new Error('Репозиторий не найден или у текущего аккаунта нет к нему доступа.')
   }
   if (lower.includes('non-fast-forward') || lower.includes('not possible to fast-forward')) {
-    return new Error('История на GitHub разошлась с локальной. LiteSSH не выполняет force push; сначала разрешите конфликт.')
+    return new Error('История в удалённом репозитории разошлась с локальной. LiteSSH не выполняет force push; сначала разрешите конфликт.')
   }
   if (lower.includes('please tell me who you are') || lower.includes('author identity unknown')) {
     return new Error('Укажите имя и email автора коммита.')
@@ -103,7 +179,26 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
-function runLocalGit(cwd: string, args: string[], timeoutMs = 60_000): Promise<CommandResult> {
+/**
+ * Окружение git без интерактивных запросов: иначе при недоступном репозитории git/GCM
+ * ждёт ввода логина (или скрытого окна) до таймаута, и интерфейс «молчит».
+ * Интерактивным остаётся только явный вход через кнопку.
+ */
+function localGitEnv(interactive: boolean): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: 'C', LANG: 'C' }
+  if (!interactive) {
+    env.GIT_TERMINAL_PROMPT = '0'
+    env.GCM_INTERACTIVE = 'never'
+    env.GIT_SSH_COMMAND ??= 'ssh -o BatchMode=yes -o ConnectTimeout=15'
+  }
+  return env
+}
+
+const REMOTE_GIT_ENV =
+  'export LC_ALL=C LANG=C GIT_TERMINAL_PROMPT=0; ' +
+  'export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=15}";'
+
+function runLocalGit(cwd: string, args: string[], timeoutMs = 60_000, interactive = false): Promise<CommandResult> {
   return new Promise((resolveCommand, reject) => {
     let stdout = ''
     let stderr = ''
@@ -111,7 +206,7 @@ function runLocalGit(cwd: string, args: string[], timeoutMs = 60_000): Promise<C
     const child = spawn('git', args, {
       cwd,
       windowsHide: true,
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C' }
+      env: localGitEnv(interactive)
     })
     const finish = (result: CommandResult) => {
       if (settled) return
@@ -141,14 +236,26 @@ function runLocalGit(cwd: string, args: string[], timeoutMs = 60_000): Promise<C
   })
 }
 
-async function runRemoteGit(source: GitHubSource, args: string[], timeoutMs = 60_000): Promise<CommandResult> {
+async function runRemoteGit(
+  source: GitHubSource,
+  args: string[],
+  timeoutMs = 60_000,
+  inProjectDir = true
+): Promise<CommandResult> {
   if (!source.termId) throw new Error('SSH-сессия не выбрана')
-  const command = `export LC_ALL=C LANG=C GIT_TERMINAL_PROMPT=0; cd -- ${shellQuote(source.path)} && git ${args.map(shellQuote).join(' ')}`
-  const result = await execOnClientLimited(source.termId, command, {
-    timeoutMs,
-    maxOutputBytes: MAX_OUTPUT
-  })
-  return { code: result.code, stdout: result.stdout, stderr: result.stderr }
+  const cd = inProjectDir ? `cd -- ${shellQuote(source.path)} && ` : ''
+  const command = `${REMOTE_GIT_ENV} ${cd}git ${args.map(shellQuote).join(' ')}`
+  try {
+    const result = await execOnClientLimited(source.termId, command, {
+      timeoutMs,
+      maxOutputBytes: MAX_OUTPUT
+    })
+    return { code: result.code, stdout: result.stdout, stderr: result.stderr }
+  } catch (error) {
+    // execOnClientLimited сообщает таймаут исключением — приводим к коду как у локального git
+    if ((error as Error).message.includes('таймаут')) return { code: 124, stdout: '', stderr: (error as Error).message }
+    throw error
+  }
 }
 
 function runGit(source: GitHubSource, args: string[], timeoutMs?: number): Promise<CommandResult> {
@@ -184,28 +291,81 @@ function validateBranch(value: string): string {
   return branch
 }
 
-function browserUrl(repositoryUrl: string): string {
-  const value = repositoryUrl.trim()
-  let match = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(value)
-  if (match) return `https://github.com/${match[1]}/${match[2]}`
-  match = /^ssh:\/\/git@github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(value)
-  if (match) return `https://github.com/${match[1]}/${match[2]}`
+const MAX_LISTED_BRANCHES = 100
+
+/**
+ * Проверка ссылки на удалённый репозиторий до каких-либо изменений в папке проекта:
+ * существует ли он, есть ли доступ, пустой ли, какие ветки. Выполняется оттуда же,
+ * откуда потом будет push (компьютер или сервер SSH-сессии), без запросов пароля.
+ */
+async function probeRemote(source: GitHubSource, repository: ParsedRepositoryUrl): Promise<GitRemoteCheck> {
+  const base = {
+    host: repository.host,
+    webUrl: repository.webUrl,
+    createUrl: repository.createUrl,
+    branches: [] as string[],
+    checkedFrom: source.kind
+  }
+  // Папка может быть ещё не выбрана или не существовать — ls-remote она не нужна
+  const run = (args: string[]): Promise<CommandResult> => {
+    if (source.kind === 'remote') return runRemoteGit(source, args, 30_000, false)
+    const cwd = source.path && existsSync(source.path) && statSync(source.path).isDirectory() ? source.path : homedir()
+    return runLocalGit(cwd, args, 30_000)
+  }
+
+  let head: CommandResult
   try {
-    const parsed = new URL(value)
-    if (parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== 'github.com') throw new Error()
-    if (parsed.username || parsed.password) throw new Error()
-    const path = parsed.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path)) throw new Error()
-    return `https://github.com/${path}`
-  } catch {
-    throw new Error('Укажите ссылку вида https://github.com/user/repository или git@github.com:user/repository.git')
+    head = await run(['ls-remote', '--symref', repository.gitUrl, 'HEAD'])
+  } catch (error) {
+    if ((error as Error).message.includes('Git не установлен')) {
+      return { ...base, status: 'no-git', message: 'Git не установлен или не найден в PATH на этом компьютере.' }
+    }
+    throw error
+  }
+  if (head.code !== 0) {
+    const status = remoteFailure(head)
+    const message = status === 'no-git'
+      ? 'На сервере не установлен Git.'
+      : remoteFailureMessage(status, repository, source.kind, cleanError(head.stderr || head.stdout))
+    return { ...base, status, message }
+  }
+
+  const heads = await run(['ls-remote', '--heads', repository.gitUrl])
+  if (heads.code !== 0) {
+    const status = remoteFailure(heads)
+    return { ...base, status, message: remoteFailureMessage(status, repository, source.kind, cleanError(heads.stderr)) }
+  }
+  const allBranches = heads.stdout
+    .split('\n')
+    .map((line) => /\trefs\/heads\/(.+)$/.exec(line.trim())?.[1])
+    .filter((name): name is string => !!name)
+  const defaultBranch = /^ref: refs\/heads\/(\S+)\s+HEAD$/m.exec(head.stdout)?.[1]
+
+  if (!allBranches.length) {
+    return {
+      ...base,
+      status: 'empty',
+      message: 'Репозиторий найден и пустой — первая публикация создаст ветку.'
+    }
+  }
+  return {
+    ...base,
+    status: 'ok',
+    message: `Репозиторий доступен: веток ${allBranches.length}${defaultBranch ? `, основная — ${defaultBranch}` : ''}.`,
+    defaultBranch,
+    branches: allBranches.slice(0, MAX_LISTED_BRANCHES),
+    branchesTruncated: allBranches.length > MAX_LISTED_BRANCHES
   }
 }
 
-function validateRepositoryUrl(value: string): { gitUrl: string; webUrl: string } {
-  const webUrl = browserUrl(value)
-  const gitUrl = value.trim().startsWith('https://') ? `${webUrl}.git` : value.trim()
-  return { gitUrl, webUrl }
+export async function checkRemoteRepository(rawSource: GitHubSource, repositoryUrl: string): Promise<GitRemoteCheck> {
+  const repository = parseRepositoryUrl(repositoryUrl)
+  const path = String(rawSource.path ?? '').trim()
+  if (rawSource.kind === 'remote') {
+    if (!rawSource.termId) throw new Error('Откройте SSH-сессию для серверного проекта')
+    return probeRemote({ kind: 'remote', path: path || '.', termId: String(rawSource.termId) }, repository)
+  }
+  return probeRemote({ kind: 'local', path: path ? resolve(path) : '' }, repository)
 }
 
 function parseChanges(raw: string): { changes: GitHubChange[]; truncated: boolean } {
@@ -319,7 +479,7 @@ function emit(win: BrowserWindow, progress: GitHubProgress): void {
 }
 
 export async function loginGitHub(): Promise<void> {
-  const result = await runLocalGit(process.cwd(), ['credential-manager', 'github', 'login'], 5 * 60_000)
+  const result = await runLocalGit(homedir(), ['credential-manager', 'github', 'login'], 5 * 60_000, true)
   if (result.code !== 0) {
     const message = cleanError(result.stderr || result.stdout)
     if (message.toLowerCase().includes('not a git command')) {
@@ -343,10 +503,16 @@ export async function publishGitHubProject(win: BrowserWindow, request: GitHubPu
     const branch = validateBranch(request.branch || 'main')
     const commitMessage = String(request.commitMessage || '').trim().slice(0, 300)
     if (!commitMessage) throw new Error('Введите сообщение коммита')
-    const repository = validateRepositoryUrl(request.repositoryUrl)
+    const repository = parseRepositoryUrl(request.repositoryUrl)
 
     progress('prepare', 'Проверяю Git и папку проекта…')
     await required(source, ['--version'], 'Git недоступен', 15_000)
+
+    // До init/commit: если репозитория нет или нет доступа, папку проекта не трогаем
+    progress('prepare', `Проверяю доступ к ${repository.webUrl}…`)
+    const remoteCheck = await probeRemote(source, repository)
+    if (remoteCheck.status !== 'ok' && remoteCheck.status !== 'empty') throw new Error(remoteCheck.message)
+    progress('prepare', remoteCheck.message)
     let repo = await runGit(source, ['rev-parse', '--is-inside-work-tree'], 15_000)
     if (repo.code !== 0) {
       progress('prepare', 'Создаю локальный Git-репозиторий…')
@@ -361,9 +527,7 @@ export async function publishGitHubProject(win: BrowserWindow, request: GitHubPu
 
     const remote = await runGit(source, ['remote', 'get-url', 'origin'], 15_000)
     if (remote.code === 0) {
-      const sameRepository = (() => {
-        try { return browserUrl(remote.stdout.trim()) === repository.webUrl } catch { return false }
-      })()
+      const sameRepository = repositoryIdentity(remote.stdout.trim()) === repositoryIdentity(repository.gitUrl)
       if (!sameRepository) {
         if (!request.replaceRemote) {
           throw new Error(`У origin уже другая ссылка: ${remote.stdout.trim()}. Подтвердите её замену.`)
@@ -405,10 +569,10 @@ export async function publishGitHubProject(win: BrowserWindow, request: GitHubPu
     const head = await runGit(source, ['rev-parse', '--verify', 'HEAD'], 15_000)
     if (head.code !== 0) throw new Error('В проекте нет файлов для первого коммита')
 
-    progress('sync', 'Проверяю состояние ветки на GitHub…')
+    progress('sync', `Проверяю ветку ${branch} на ${repository.host}…`)
     const remoteBranch = await runGit(source, ['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${branch}`], 90_000)
     if (remoteBranch.code === 0) {
-      await required(source, ['fetch', 'origin', branch], 'Не удалось получить изменения с GitHub', 5 * 60_000)
+      await required(source, ['fetch', 'origin', branch], 'Не удалось получить изменения из удалённого репозитория', 5 * 60_000)
       const remoteIsAncestor = await runGit(source, ['merge-base', '--is-ancestor', `origin/${branch}`, 'HEAD'], 30_000)
       if (remoteIsAncestor.code !== 0) {
         const localIsAncestor = await runGit(source, ['merge-base', '--is-ancestor', 'HEAD', `origin/${branch}`], 30_000)
@@ -416,16 +580,16 @@ export async function publishGitHubProject(win: BrowserWindow, request: GitHubPu
           await required(source, ['merge', '--ff-only', `origin/${branch}`], 'Не удалось безопасно обновить локальную ветку', 60_000)
           progress('sync', 'Локальная ветка обновлена без конфликтов.')
         } else {
-          throw new Error('Локальная история и GitHub разошлись. Публикация остановлена без force push.')
+          throw new Error('Локальная история и удалённый репозиторий разошлись. Публикация остановлена без force push.')
         }
       }
     } else if (remoteBranch.code !== 2) {
-      throw friendlyError(remoteBranch, 'Не удалось проверить ветку на GitHub')
+      throw friendlyError(remoteBranch, 'Не удалось проверить ветку в удалённом репозитории')
     }
 
-    progress('push', 'Отправляю изменения на GitHub…')
+    progress('push', `Отправляю изменения на ${repository.host}…`)
     await required(source, ['push', '--set-upstream', 'origin', `HEAD:refs/heads/${branch}`], 'Не удалось отправить изменения', 10 * 60_000)
-    progress('done', 'Проект успешно опубликован на GitHub.')
+    progress('done', `Проект опубликован: ${repository.webUrl}`)
     return { url: repository.webUrl, log }
   } finally {
     activePublishes.delete(key)
