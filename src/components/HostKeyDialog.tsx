@@ -34,7 +34,9 @@ export function HostKeyDialog() {
 
           {prompt.changed ? (
             <p className="mb-3 text-xs leading-relaxed text-red-400">
-              Отпечаток ключа сервера {prompt.host}:{prompt.port} не совпадает с сохранённым.
+              {prompt.knownKeyTypes?.length
+                ? `Сервер ${prompt.host}:${prompt.port} предъявил ключ другого типа (${prompt.keyType}), чем сохранённый (${prompt.knownKeyTypes.join(', ')}).`
+                : `Отпечаток ключа сервера ${prompt.host}:${prompt.port} не совпадает с сохранённым.`}
               Это может означать атаку «человек посередине» (MITM) — либо сервер был переустановлен.
               Продолжайте, только если уверены в причине смены ключа.
             </p>

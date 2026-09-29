@@ -1,8 +1,9 @@
 // Ленивый чанк: CodeMirror загружается только при первом открытии предпросмотра
 import CodeMirror from '@uiw/react-codemirror'
-import { vscodeDark } from '@uiw/codemirror-theme-vscode'
+import { vscodeDark, vscodeLight } from '@uiw/codemirror-theme-vscode'
 import { langs } from '@uiw/codemirror-extensions-langs'
 import type { Extension } from '@codemirror/state'
+import { useIsDark } from '@/lib/useIsDark'
 
 // langs из @uiw/codemirror-extensions-langs ключуется расширениями файлов;
 // здесь только алиасы, остальное берётся по расширению напрямую
@@ -27,6 +28,7 @@ interface Props {
 }
 
 export default function CodeEditor({ value, filename, onChange }: Props) {
+  const dark = useIsDark()
   const base = filename.toLowerCase()
   const rawExt = base === 'dockerfile' ? 'dockerfile' : (base.split('.').pop() ?? '')
   const ext = EXT_ALIAS[rawExt] ?? rawExt
@@ -43,7 +45,7 @@ export default function CodeEditor({ value, filename, onChange }: Props) {
     <CodeMirror
       value={value}
       onChange={onChange}
-      theme={vscodeDark}
+      theme={dark ? vscodeDark : vscodeLight}
       extensions={extensions}
       height="100%"
       style={{ height: '100%', fontSize: 12 }}

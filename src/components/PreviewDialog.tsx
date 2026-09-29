@@ -168,7 +168,7 @@ export function PreviewDialog() {
               <X size={14} />
             </Dialog.Close>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto bg-[#1e1e1e]">
+          <div className="min-h-0 flex-1 overflow-auto bg-white dark:bg-[#1e1e1e]">
             {kind === 'loading' && (
               <div className="flex h-full items-center justify-center text-content-3">
                 <Loader2 size={20} className="animate-spin" />

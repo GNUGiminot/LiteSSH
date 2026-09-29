@@ -10,6 +10,11 @@ import { useSettings } from '@/stores/useSettings'
 import { TERM_THEMES } from '@/lib/termThemes'
 import { reconnectTab } from '@/lib/connect'
 
+// Запрос секрета в конце вывода: то, что вводится после него, в историю не попадает
+const SECRET_PROMPT_RE = /(password|passphrase|пароль|pin|token|otp|verification code|one-time|secret|парольная фраза)[^\n]*[:：?]\s*$/i
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b[()][AB012]|\x1b[=>]/g
+
 interface Props {
   termId: string
   active: boolean
@@ -51,6 +56,7 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
         ? {
             write: window.api.pty.write,
             resize: window.api.pty.resize,
+            attach: window.api.pty.attach,
             onData: window.api.pty.onData,
             onExit: (cb: (id: string, msg?: string) => void) =>
               window.api.pty.onExit((id) => cb(id))
@@ -58,6 +64,7 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
         : {
             write: window.api.ssh.write,
             resize: window.api.ssh.resize,
+            attach: window.api.ssh.attach,
             onData: window.api.term.onData,
             onExit: window.api.term.onExit
           }
@@ -91,9 +98,11 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
       const sel = term.getSelection()
       if (sel) void navigator.clipboard.writeText(sel)
     }
+    // term.paste() учитывает bracketed paste (многострочный текст не выполняется сразу)
+    // и проходит через onData — значит, попадает во все панели при синхронном вводе
     const paste = () => {
       void navigator.clipboard.readText().then((text) => {
-        if (text) io.write(termId, text)
+        if (text) term.paste(text)
       })
     }
 
@@ -127,14 +136,26 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
     // Грубая реконструкция вводимых команд для истории: копим печатные символы,
     // на Enter коммитим строку. ESC/управляющие последовательности (стрелки и т.п.)
     // сбрасывают буфер, чтобы не писать в историю мусор.
+    // Строки, введённые после запроса пароля (sudo, ssh, gpg…), и строки с ведущим пробелом
+    // (соглашение HISTCONTROL=ignorespace) в историю не пишутся.
     let cmdBuf = ''
+    let outputTail = ''
+    let lineIsSecret = false
+    const decoder = new TextDecoder()
+    const trackOutput = (data: Uint8Array | string) => {
+      const text = typeof data === 'string' ? data : decoder.decode(data, { stream: true })
+      outputTail = (outputTail + text.replace(ANSI_RE, '')).slice(-300)
+    }
     const captureInput = (data: string) => {
       for (let i = 0; i < data.length; i++) {
         const ch = data.charCodeAt(i)
+        if (!cmdBuf && ch >= 0x20 && ch !== 0x7f) lineIsSecret = SECRET_PROMPT_RE.test(outputTail)
         if (ch === 0x0d || ch === 0x0a) {
           const cmd = cmdBuf.trim()
-          if (cmd) window.api.history.add(cmd)
+          const secret = lineIsSecret || SECRET_PROMPT_RE.test(outputTail)
+          if (cmd && !secret && !cmdBuf.startsWith(' ')) window.api.history.add(cmd)
           cmdBuf = ''
+          lineIsSecret = false
         } else if (ch === 0x7f || ch === 0x08) {
           cmdBuf = cmdBuf.slice(0, -1)
         } else if (ch === 0x1b || ch === 0x03 || ch === 0x15) {
@@ -157,13 +178,18 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
     term.onResize(({ cols, rows }) => io.resize(termId, cols, rows))
 
     const offData = io.onData((id, data) => {
-      if (id === termId) term.write(data)
+      if (id !== termId) return
+      term.write(data)
+      if (kind === 'ssh') trackOutput(data)
     })
     const offExit = io.onExit((id, message) => {
       if (id !== termId) return
       const label = kind === 'pty' ? 'Терминал закрыт' : 'Соединение закрыто'
       term.write(`\r\n\x1b[1;31m[${label}${message ? ': ' + message : ''}]\x1b[0m\r\n`)
     })
+
+    // Подписались на вывод — теперь main может отдать накопленное до монтирования (баннер, приглашение)
+    io.attach(termId)
 
     const doFit = () => {
       if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit()
@@ -231,9 +257,12 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
         </div>
       )}
       {status === 'disconnected' && canReconnect && (
+        // при открытом поиске кнопка опускается под его панель, чтобы не перекрывать её
         <button
           onClick={() => void reconnectTab(termId)}
-          className="absolute right-3 top-2 z-10 flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-accent-hover"
+          className={`absolute right-3 z-10 flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-accent-hover ${
+            searchOpen ? 'top-12' : 'top-2'
+          }`}
         >
           <RotateCw size={13} /> Переподключить
         </button>

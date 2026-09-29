@@ -28,7 +28,7 @@ function cpuTotals(line: string): { total: number; idle: number } | null {
 }
 
 export async function getHostMetrics(termId: string): Promise<HostMetrics> {
-  const { stdout } = await execOnClient(termId, SCRIPT)
+  const { stdout } = await execOnClient(termId, SCRIPT, 10_000)
   const lines = Object.fromEntries(
     stdout
       .split('\n')

@@ -339,7 +339,13 @@ export function clearVaultMeta(): void {
   getDb().prepare('DELETE FROM vault_meta').run()
 }
 
+/** Выполнить несколько операций с БД атомарно (вложенные транзакции становятся savepoint). */
+export function inTransaction<T>(fn: () => T): T {
+  return getDb().transaction(fn)()
+}
+
 /** Перешифровать все хранимые секреты функцией transform (для смены режима хранилища). */
+
 export function reencryptSecrets(transform: (stored: string | null) => string | null): void {
   const db = getDb()
   const tx = db.transaction(() => {
@@ -467,6 +473,13 @@ export function getKnownHostKey(host: string, port: number, keyType: string): st
     .prepare('SELECT fingerprint FROM known_hosts WHERE host = ? AND port = ? AND key_type = ?')
     .get(host, port, keyType) as { fingerprint: string } | undefined
   return row?.fingerprint
+}
+
+export function listKnownHostKeyTypes(host: string, port: number): string[] {
+  const rows = getDb()
+    .prepare('SELECT key_type FROM known_hosts WHERE host = ? AND port = ?')
+    .all(host, port) as { key_type: string }[]
+  return rows.map((row) => row.key_type)
 }
 
 export function saveKnownHostKey(host: string, port: number, keyType: string, fingerprint: string): void {

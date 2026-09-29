@@ -1,7 +1,7 @@
 {
   "name": "litessh",
   "productName": "LiteSSH",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Lightweight cross-platform SSH client",
   "author": "Krainevtech and AI",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -12,6 +12,7 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test:transfer": "esbuild scripts/transfer-smoke.ts --bundle --platform=node --format=cjs --outfile=.tmp/transfer-smoke.cjs --external:electron --external:better-sqlite3 --external:ssh2 && node .tmp/transfer-smoke.cjs",
+    "test:ssh": "esbuild scripts/ssh-smoke.ts --bundle --platform=node --format=cjs --outfile=.tmp/ssh-smoke.cjs --external:electron --external:better-sqlite3 --external:ssh2 --alias:@shared=./shared && electron .tmp/ssh-smoke.cjs",
     "smoke": "electron . --smoke",
     "postinstall": "electron-builder install-app-deps",
     "dist": "electron-vite build && electron-builder"

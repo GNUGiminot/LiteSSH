@@ -8,6 +8,7 @@ import type {
   GitHubPublishRequest,
   GitHubRepoState,
   GitHubSource,
+  GitRemoteCheck,
   KeyInfo,
   ListResult,
   LiteSSHApi,
@@ -50,6 +51,7 @@ const api: LiteSSHApi = {
     write: (termId, data) => ipcRenderer.send('term:write', termId, data),
     resize: (termId, cols, rows) => ipcRenderer.send('term:resize', termId, cols, rows),
     close: (termId) => ipcRenderer.send('term:close', termId),
+    attach: (termId) => ipcRenderer.send('term:attach', termId),
     isLogging: (termId): Promise<boolean> => ipcRenderer.invoke('term:is-logging', termId),
     toggleLog: (termId) => ipcRenderer.invoke('term:toggle-log', termId)
   },
@@ -114,6 +116,7 @@ const api: LiteSSHApi = {
     write: (ptyId, data) => ipcRenderer.send('pty:write', ptyId, data),
     resize: (ptyId, cols, rows) => ipcRenderer.send('pty:resize', ptyId, cols, rows),
     close: (ptyId) => ipcRenderer.send('pty:close', ptyId),
+    attach: (ptyId) => ipcRenderer.send('pty:attach', ptyId),
     shells: () => ipcRenderer.invoke('pty:shells'),
     onData: (cb) => subscribe<[string, string]>('pty:data', cb),
     onExit: (cb) => subscribe<[string]>('pty:exit', cb)
@@ -148,6 +151,8 @@ const api: LiteSSHApi = {
     pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('github:pick-directory'),
     inspect: (source: GitHubSource): Promise<OpResult & { state?: GitHubRepoState }> =>
       ipcRenderer.invoke('github:inspect', source),
+    checkRemote: (source: GitHubSource, repositoryUrl: string): Promise<OpResult & { check?: GitRemoteCheck }> =>
+      ipcRenderer.invoke('github:check-remote', source, repositoryUrl),
     login: (): Promise<OpResult> => ipcRenderer.invoke('github:login'),
     publish: (request: GitHubPublishRequest): Promise<OpResult & { url?: string; log?: string[] }> =>
       ipcRenderer.invoke('github:publish', request),

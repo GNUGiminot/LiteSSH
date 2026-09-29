@@ -66,53 +66,87 @@ function ensureStatsLoop(): void {
   }, 1000)
 }
 
-/** SOCKS5-хендшейк (без аутентификации), возвращает целевой host:port. */
+const SOCKS_REPLY_OK = 0x00
+const SOCKS_REPLY_HOST_UNREACHABLE = 0x04
+const SOCKS_REPLY_COMMAND_UNSUPPORTED = 0x07
+
+function socksReply(code: number): Buffer {
+  return Buffer.from([0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+}
+
+/**
+ * SOCKS5-хендшейк (без аутентификации), возвращает целевой host:port.
+ * Сообщения клиента копятся в буфер (могут прийти частями или слитно), а байты сверх
+ * запроса возвращаются в поток через unshift — иначе данные, отправленные сразу
+ * после запроса CONNECT, терялись. Ответ «успех» шлёт вызывающий после открытия канала.
+ */
 function socks5Handshake(socket: Socket): Promise<{ host: string; port: number } | null> {
   return new Promise((resolve) => {
-    let stage = 0
-    const onData = (chunk: Buffer) => {
-      if (stage === 0) {
-        // [ver, nmethods, methods...]
-        if (chunk[0] !== 0x05) return finish(null)
-        socket.write(Buffer.from([0x05, 0x00])) // no auth
-        stage = 1
-      } else if (stage === 1) {
-        // [ver, cmd, rsv, atyp, addr, port]
-        if (chunk[0] !== 0x05 || chunk[1] !== 0x01) {
-          socket.write(Buffer.from([0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
-          return finish(null)
-        }
-        const atyp = chunk[3]
-        let host: string
-        let offset: number
-        if (atyp === 0x01) {
-          host = `${chunk[4]}.${chunk[5]}.${chunk[6]}.${chunk[7]}`
-          offset = 8
-        } else if (atyp === 0x03) {
-          const len = chunk[4]
-          host = chunk.subarray(5, 5 + len).toString('utf8')
-          offset = 5 + len
-        } else if (atyp === 0x04) {
-          const parts: string[] = []
-          for (let i = 0; i < 16; i += 2) parts.push(chunk.readUInt16BE(4 + i).toString(16))
-          host = parts.join(':')
-          offset = 20
-        } else {
-          return finish(null)
-        }
-        const port = chunk.readUInt16BE(offset)
-        // ответ success
-        socket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
-        stage = 2
-        finish({ host, port })
-      }
-    }
-    const finish = (result: { host: string; port: number } | null) => {
+    let buffer = Buffer.alloc(0)
+    let greeted = false
+    let done = false
+    const finish = (result: { host: string; port: number } | null, rest?: Buffer) => {
+      if (done) return
+      done = true
       socket.off('data', onData)
+      socket.off('error', onError)
+      socket.pause()
+      if (rest?.length) socket.unshift(rest)
       resolve(result)
     }
+    const onError = () => finish(null)
+    const onData = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk])
+      if (buffer.length > 1024) return finish(null)
+      if (!greeted) {
+        // [ver, nmethods, methods...]
+        if (buffer.length < 2) return
+        if (buffer[0] !== 0x05) return finish(null)
+        const need = 2 + buffer[1]
+        if (buffer.length < need) return
+        const methods = buffer.subarray(2, need)
+        if (!methods.includes(0x00)) {
+          socket.write(Buffer.from([0x05, 0xff])) // нет приемлемого метода
+          return finish(null)
+        }
+        socket.write(Buffer.from([0x05, 0x00])) // no auth
+        greeted = true
+        buffer = buffer.subarray(need)
+      }
+      // [ver, cmd, rsv, atyp, addr, port]
+      if (buffer.length < 4) return
+      if (buffer[0] !== 0x05 || buffer[1] !== 0x01) {
+        socket.write(socksReply(SOCKS_REPLY_COMMAND_UNSUPPORTED))
+        return finish(null)
+      }
+      const atyp = buffer[3]
+      let host: string
+      let offset: number
+      if (atyp === 0x01) {
+        if (buffer.length < 10) return
+        host = `${buffer[4]}.${buffer[5]}.${buffer[6]}.${buffer[7]}`
+        offset = 8
+      } else if (atyp === 0x03) {
+        if (buffer.length < 5) return
+        const len = buffer[4]
+        if (buffer.length < 5 + len + 2) return
+        host = buffer.subarray(5, 5 + len).toString('utf8')
+        offset = 5 + len
+      } else if (atyp === 0x04) {
+        if (buffer.length < 22) return
+        const parts: string[] = []
+        for (let i = 0; i < 16; i += 2) parts.push(buffer.readUInt16BE(4 + i).toString(16))
+        host = parts.join(':')
+        offset = 20
+      } else {
+        socket.write(socksReply(0x08))
+        return finish(null)
+      }
+      const port = buffer.readUInt16BE(offset)
+      finish({ host, port }, buffer.subarray(offset + 2))
+    }
     socket.on('data', onData)
-    socket.once('error', () => finish(null))
+    socket.on('error', onError)
   })
 }
 
@@ -139,32 +173,42 @@ export function startTunnel(termId: string, tunnelId: string): { ok: boolean; er
   if (!row) return { ok: false, error: 'Туннель не найден' }
   const client = getClient(termId)
   if (!client) return { ok: false, error: 'SSH-сессия не активна' }
-  if (active.has(tunnelId)) return { ok: true }
+  const existing = active.get(tunnelId)
+  if (existing && !existing.error) return { ok: true }
+  // Туннель с ошибкой (порт занят, сервер отказал) перезапускаем, а не отвечаем «уже запущен»
+  if (existing) stopTunnel(tunnelId)
 
   const t: ActiveTunnel = { row, termId, sockets: new Set(), bytesIn: 0, bytesOut: 0, conns: 0 }
 
   if (row.type === 'local' || row.type === 'dynamic') {
     const server = createServer((socket) => {
-      const handle = (host: string, port: number) => {
-        client.forwardOut(socket.remoteAddress ?? '127.0.0.1', socket.remotePort ?? 0, host, port, (err, stream) => {
+      socket.on('error', () => socket.destroy())
+      const handle = (host: string, port: number, socks: boolean) => {
+        const current = getClient(t.termId) ?? client
+        current.forwardOut(socket.remoteAddress ?? '127.0.0.1', socket.remotePort ?? 0, host, port, (err, stream) => {
           if (err) {
-            socket.destroy()
+            // Клиент SOCKS должен узнать о неудаче, а не получить «успех» и обрыв
+            if (socks && !socket.destroyed) socket.end(socksReply(SOCKS_REPLY_HOST_UNREACHABLE))
+            else socket.destroy()
             return
           }
+          if (socks) socket.write(socksReply(SOCKS_REPLY_OK))
           pipeThrough(t, socket, stream)
+          socket.resume()
         })
       }
       if (row.type === 'dynamic') {
         void socks5Handshake(socket).then((target) => {
-          if (target) handle(target.host, target.port)
+          if (target) handle(target.host, target.port, true)
           else socket.destroy()
         })
       } else {
-        handle(row.dst_host, row.dst_port)
+        handle(row.dst_host, row.dst_port, false)
       }
     })
     server.on('error', (err) => {
       t.error = err.message
+      server.close()
       broadcast()
     })
     server.listen(row.src_port, row.src_host, () => {
@@ -215,6 +259,11 @@ export function stopTunnel(tunnelId: string): void {
   }
   active.delete(tunnelId)
   broadcast()
+}
+
+/** split view: соединение перешло к другой панели — туннели продолжают работать под её id. */
+export function moveTunnelsToTerm(fromTermId: string, toTermId: string): void {
+  for (const t of active.values()) if (t.termId === fromTermId) t.termId = toTermId
 }
 
 /** Останавливает все туннели закрываемой сессии. */
