@@ -121,6 +121,11 @@ export function closePty(ptyId: string): void {
   }
 }
 
+/** Страница окна перезагрузилась/упала: локальные шеллы её вкладок больше никому не видны. */
+export function closePtysForWindow(win: BrowserWindow): void {
+  for (const [id, p] of [...ptys]) if (p.win === win) closePty(id)
+}
+
 export function closeAllPtys(): void {
   for (const [id] of ptys) closePty(id)
 }

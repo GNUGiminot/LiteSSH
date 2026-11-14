@@ -7,7 +7,7 @@
 
 | Слой | Технология |
 |---|---|
-| Оболочка | Electron 33, electron-vite, electron-builder |
+| Оболочка | Electron 45, electron-vite, electron-builder |
 | Интерфейс | React 18, TypeScript, Tailwind CSS 3, Radix UI, Lucide |
 | Терминал | xterm.js: fit, search, web-links, WebGL |
 | SSH/SFTP | ssh2 в main-процессе |

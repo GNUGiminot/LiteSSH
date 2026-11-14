@@ -252,7 +252,14 @@ export function saveSession(p: SessionProfile): SessionProfile {
 }
 
 export function deleteSession(id: string): void {
-  getDb().prepare('DELETE FROM sessions WHERE id = ?').run(id)
+  const db = getDb()
+  db.transaction(() => {
+    // Туннели удалённой сессии больше нигде не видны и не запустятся — не копим их в БД.
+    // Ссылки jump_session_id на неё не трогаем: молча пустить сессию напрямую в обход
+    // бастиона нельзя — при подключении будет понятная ошибка (см. profileFromSession).
+    db.prepare('DELETE FROM tunnels WHERE session_id = ?').run(id)
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+  })()
 }
 
 export function touchSession(id: string): void {

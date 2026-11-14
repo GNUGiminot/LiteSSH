@@ -123,11 +123,18 @@ export function unlock(password: string, verifier: string): boolean {
   } catch {
     /* неверный пароль → GCM-ошибка */
   }
+  key.fill(0)
   return false
 }
 
-export function lock(): void {
+/** Затирает ключ в памяти перед тем, как отпустить ссылку (иначе он живёт до сборки мусора). */
+function wipeKey(): void {
+  masterKey?.fill(0)
   masterKey = null
+}
+
+export function lock(): void {
+  wipeKey()
 }
 
 /**
@@ -148,7 +155,7 @@ export function prepareMaster(password: string): VaultMeta {
 export function disableMaster(): void {
   mode = 'keychain'
   salt = null
-  masterKey = null
+  wipeKey()
 }
 
 /** Разово перешифровать один хранимый секрет в текущий режим (для миграции). */

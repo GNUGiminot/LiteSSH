@@ -2,8 +2,8 @@ import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } from 'ele
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { registerIpc } from './ipc'
-import { closeAll } from './ssh/connection-manager'
-import { closeAllPtys, availableShells } from './pty-manager'
+import { closeAll, closeTermsForWindow } from './ssh/connection-manager'
+import { closeAllPtys, closePtysForWindow, availableShells } from './pty-manager'
 import { listSessions, getVaultMeta, closeDb } from './db'
 import { loadVaultMeta } from './vault'
 import { closeMcpBridge, smokeMcpParallel, smokeMcpProtocol } from './mcp-bridge'
@@ -81,6 +81,19 @@ export function createWindow(): BrowserWindow {
     }
   })
 
+  // Сессии, локальные шеллы и туннели живут в main, а вкладки — на странице. Если страница
+  // перезагрузилась (Ctrl+R) или упала, вкладок больше нет — закрываем всё, что ей принадлежало,
+  // иначе соединения и процессы оставались бы висеть невидимыми до выхода из приложения.
+  const releaseWindowResources = () => {
+    closeTermsForWindow(win)
+    closePtysForWindow(win)
+  }
+  win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) releaseWindowResources()
+  })
+  win.webContents.on('render-process-gone', releaseWindowResources)
+  win.on('closed', releaseWindowResources)
+
   // Закрытие окна прячет его в трей; реальный выход — только через меню трея
   win.on('close', (e) => {
     if (!isQuitting) {
@@ -146,6 +159,11 @@ if (!gotLock) {
 
 app.whenReady().then(() => {
   if (!gotLock) return
+  // Стандартное меню Electron скрыто (autoHideMenuBar), но его сочетания работают: Ctrl+R
+  // перезагружал окно со всеми вкладками, Ctrl+W прятал его, Ctrl+Shift+I открывал DevTools.
+  // У приложения свои горячие клавиши; копирование/вставка в полях на Windows/Linux
+  // работают и без меню. На macOS меню нужно для Cmd+C/V — его не трогаем.
+  if (app.isPackaged && process.platform !== 'darwin') Menu.setApplicationMenu(null)
   loadVaultMeta(getVaultMeta())
   registerIpc()
   ipcMain.on('window:new', () => createWindow())

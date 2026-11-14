@@ -132,7 +132,9 @@ export function keysImport(filePath: string, name: string, passphrase?: string):
 }
 
 export function keysExportPrivate(id: string, destPath: string): void {
-  writeFileSync(destPath, keyPrivatePem(id), { encoding: 'utf8' })
+  // 0600: с правами по умолчанию (0644) ключ читают другие пользователи, а OpenSSH
+  // отказывается его использовать («UNPROTECTED PRIVATE KEY FILE»). На Windows mode не влияет.
+  writeFileSync(destPath, keyPrivatePem(id), { encoding: 'utf8', mode: 0o600 })
 }
 
 /** Shell-скрипт добавления публичного ключа в authorized_keys с правильными правами. */
@@ -142,6 +144,10 @@ export function deployScript(publicLine: string): string {
     'mkdir -p ~/.ssh',
     'chmod 700 ~/.ssh',
     'touch ~/.ssh/authorized_keys',
+    // Как ssh-copy-id: если файл не кончается переводом строки, дописанный ключ склеился бы
+    // с последним и испортил оба. Пустая подстановка $(...) — значит, последний байт — \n.
+    // Без { } — команда идёт через логин-шелл сервера, а в fish 3.x скобки не группируют.
+    'test ! -s ~/.ssh/authorized_keys || test -z "$(tail -c1 ~/.ssh/authorized_keys)" || echo >> ~/.ssh/authorized_keys',
     `grep -qxF '${line}' ~/.ssh/authorized_keys || echo '${line}' >> ~/.ssh/authorized_keys`,
     'chmod 600 ~/.ssh/authorized_keys',
     'echo LITESSH_DEPLOY_OK'
