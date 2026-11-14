@@ -192,6 +192,12 @@ export function startTunnel(termId: string, tunnelId: string): { ok: boolean; er
             else socket.destroy()
             return
           }
+          // Клиент ушёл, пока открывался канал: его 'close' уже прошёл, и pipeThrough
+          // не узнал бы о нём — SSH-канал остался бы открытым навсегда
+          if (socket.destroyed) {
+            stream.close()
+            return
+          }
           if (socks) socket.write(socksReply(SOCKS_REPLY_OK))
           pipeThrough(t, socket, stream)
           socket.resume()
@@ -308,13 +314,20 @@ export function startEphemeralLocal(
     }
     const t: ActiveTunnel = { row, termId, sockets: new Set(), bytesIn: 0, bytesOut: 0, conns: 0 }
     const server = createServer((socket) => {
-      client.forwardOut(
+      // Без слушателя сброс соединения RDP-клиентом до открытия канала ронял main-процесс
+      socket.on('error', () => socket.destroy())
+      // После split/закрытия главной панели клиент живёт под другим termId
+      const current = getClient(t.termId) ?? client
+      current.forwardOut(
         socket.remoteAddress ?? '127.0.0.1',
         socket.remotePort ?? 0,
         dstHost,
         dstPort,
         (err, stream) => {
-          if (err) return socket.destroy()
+          if (err || socket.destroyed) {
+            stream?.close()
+            return socket.destroy()
+          }
           pipeThrough(t, socket, stream)
         }
       )

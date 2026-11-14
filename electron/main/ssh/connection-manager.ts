@@ -56,7 +56,17 @@ const HOST_KEY_PROMPT_MS = 120_000
 const terms = new Map<string, ActiveTerm>()
 /** Сколько панелей (shell-каналов) держат общий SSH-клиент — для split view. */
 const clientRefs = new Map<Client, number>()
-const hostKeyResolvers = new Map<string, (accept: boolean) => void>()
+const hostKeyResolvers = new Map<
+  string,
+  { resolve: (accept: boolean) => void; win: BrowserWindow; timer: NodeJS.Timeout }
+>()
+/**
+ * Поколение страницы окна: растёт при перезагрузке/падении renderer. Подключение,
+ * начатое старой страницей и завершившееся после перезагрузки, закрывается —
+ * иначе оставался бы shell без вкладки.
+ */
+const windowEpochs = new WeakMap<BrowserWindow, number>()
+const epochOf = (win: BrowserWindow): number => windowEpochs.get(win) ?? 0
 /** Слушатели закрытия терминала (для остановки туннелей). */
 const closeListeners = new Set<(termId: string) => void>()
 /** Слушатели передачи соединения другой панели (split: закрылась главная панель, клиент жив). */
@@ -173,9 +183,11 @@ async function openViaJump(
 }
 
 export function respondHostKey(requestId: string, accept: boolean): void {
-  const resolve = hostKeyResolvers.get(requestId)
+  const pending = hostKeyResolvers.get(requestId)
+  if (!pending) return
   hostKeyResolvers.delete(requestId)
-  resolve?.(accept)
+  clearTimeout(pending.timer)
+  pending.resolve(accept)
 }
 
 function defaultAgent(): string | undefined {
@@ -202,13 +214,11 @@ async function verifyHostKey(win: BrowserWindow, profile: ConnectProfile, key: B
     ...(known === undefined && otherTypes.length ? { knownKeyTypes: otherTypes } : {})
   }
   const accepted = await new Promise<boolean>((resolve) => {
-    hostKeyResolvers.set(prompt.requestId, resolve)
     if (win.isDestroyed()) return resolve(false)
-    win.webContents.send('hostkey:prompt', prompt)
     // Never hang a connection forever on an unanswered dialog
-    setTimeout(() => {
-      if (hostKeyResolvers.delete(prompt.requestId)) resolve(false)
-    }, HOST_KEY_PROMPT_MS)
+    const timer = setTimeout(() => respondHostKey(prompt.requestId, false), HOST_KEY_PROMPT_MS)
+    hostKeyResolvers.set(prompt.requestId, { resolve, win, timer })
+    win.webContents.send('hostkey:prompt', prompt)
   })
   if (accepted) saveKnownHostKey(profile.host, profile.port, keyType, fingerprint)
   return accepted
@@ -227,7 +237,9 @@ function buildConfig(
     readyTimeout: 0,
     keepaliveInterval: 15_000,
     keepaliveCountMax: 3,
-    tryKeyboard: true,
+    // keyboard-interactive отвечает сохранённым паролем. Без пароля (ключ/агент) он
+    // слал бы пустые ответы — лишние неудачные попытки входа (MaxAuthTries, fail2ban).
+    tryKeyboard: profile.authType === 'password',
     hostVerifier: (key: Buffer, verify: (ok: boolean) => void) => {
       onHostKey?.('start')
       verifyHostKey(win, profile, key)
@@ -495,6 +507,10 @@ function wireShellStream(
   stream.on('data', onData)
   stream.stderr.on('data', onData)
   stream.on('close', () => releasePane(termId))
+  // Без слушателя 'error' сбой канала (например, запись после закрытия) — это
+  // необработанное исключение, которое роняет main-процесс со всеми сессиями.
+  stream.on('error', () => releasePane(termId))
+  stream.stderr.on('error', () => undefined)
 }
 
 /** Renderer смонтировал терминал: отдаём накопленный вывод и дальше шлём напрямую. */
@@ -521,8 +537,13 @@ export function openExtraShell(
     const src = terms.get(sourceTermId)
     if (!src) return reject(new Error('Исходная сессия не активна'))
     const { client, win } = src
+    const epoch = epochOf(win)
     client.shell({ term: 'xterm-256color', cols: size.cols, rows: size.rows }, (err, stream) => {
       if (err) return reject(err)
+      if (epochOf(win) !== epoch || !clientRefs.has(client)) {
+        stream.close()
+        return reject(new Error('Сессия закрыта во время открытия панели'))
+      }
       const termId = randomUUID()
       terms.set(termId, newTerm(client, stream, win))
       clientRefs.set(client, (clientRefs.get(client) ?? 1) + 1)
@@ -542,6 +563,7 @@ export function connect(
     const client = new Client()
     const termId = randomUUID()
     const title = profile.name || `${profile.username}@${profile.host}`
+    const epoch = epochOf(win)
     let settled = false
     let jumpClients: Client[] | undefined
 
@@ -583,8 +605,9 @@ export function connect(
         },
         (err, stream) => {
           if (err) return fail(err)
-          if (settled) {
+          if (settled || epochOf(win) !== epoch) {
             stream.close()
+            fail(new Error('Окно перезагружено во время подключения'))
             return
           }
           terms.set(termId, newTerm(client, stream, win, jumpClients))
@@ -694,10 +717,35 @@ export function closeTerm(termId: string): void {
   releasePane(termId)
 }
 
+/**
+ * Страница окна перезагрузилась, упала или окно уничтожено: вкладок этих сессий больше нет.
+ * Закрываем их shell-каналы (и соединения, если других панелей нет), отклоняем открытые
+ * диалоги ключа хоста и помечаем новое поколение страницы для подключений «в полёте».
+ */
+export function closeTermsForWindow(win: BrowserWindow): void {
+  windowEpochs.set(win, epochOf(win) + 1)
+  for (const [id, pending] of [...hostKeyResolvers]) {
+    if (pending.win === win) respondHostKey(id, false)
+  }
+  for (const [id, t] of [...terms]) {
+    if (t.win === win) closeTerm(id)
+  }
+}
+
 export function closeAll(): void {
+  const jumps = new Set<Client>()
   for (const [, t] of terms) {
+    endLog(t) // дописать хвост журнала сессии на диск
+    t.jumpClients?.forEach((c) => jumps.add(c))
     try {
       t.client.end()
+    } catch {
+      /* ignore */
+    }
+  }
+  for (const c of jumps) {
+    try {
+      c.end()
     } catch {
       /* ignore */
     }

@@ -231,6 +231,48 @@ async function main(): Promise<void> {
   assert(innerCopy?.jumpSessionId === copies.find((s) => s.name === 'bastion-copy')?.id, 'бастион восстановлен по имени')
   console.log('OK sessions-json-roundtrip')
 
+  // 10. Перезагрузка/падение страницы окна закрывает её сессии и туннели, не трогая другие окна
+  const winA = fakeWindow(() => undefined)
+  const winB = fakeWindow(() => undefined)
+  const keep = await cm.connect(winA, profile, { cols: 80, rows: 24 })
+  const gone = await cm.connect(winB, profile, { cols: 80, rows: 24 })
+  const goneTunnelPort = await freePort()
+  const goneTunnel = db.saveTunnel({ id: '', session_id: sessionRow.id, type: 'local', src_host: '127.0.0.1', src_port: goneTunnelPort, dst_host: '127.0.0.1', dst_port: echoPort, autostart: 0 })
+  assert(tm.startTunnel(gone.termId, goneTunnel.id).ok, 'туннель окна B запущен')
+  cm.closeTermsForWindow(winB)
+  await new Promise((r) => setTimeout(r, 200))
+  assert(!cm.getClient(gone.termId), 'сессия окна B закрыта')
+  assert(!tm.tunnelStates().some((s) => s.id === goneTunnel.id), 'туннель окна B остановлен')
+  assert(cm.getClient(keep.termId), 'сессия окна A жива')
+  console.log('OK window-cleanup')
+
+  // 11. Подключение «в полёте» во время перезагрузки не оставляет shell без вкладки
+  const winC = fakeWindow(() => undefined)
+  const pending = cm.connect(winC, profile, { cols: 80, rows: 24 })
+  cm.closeTermsForWindow(winC)
+  const raced = await pending.then(() => 'connected', (e: Error) => e.message)
+  assert(raced.includes('перезагружено'), `подключение после перезагрузки отклонено: ${raced}`)
+  console.log('OK reload-race')
+  cm.closeTerm(keep.termId)
+
+  // 12. Удаление сессии убирает её туннели из БД
+  const doomed = db.saveSession({ id: '', name: 'doomed', folder: '', host: '127.0.0.1', port: sshPort, username: USER, authType: 'password' })
+  db.saveTunnel({ id: '', session_id: doomed.id, type: 'local', src_host: '127.0.0.1', src_port: 1, dst_host: 'x', dst_port: 1, autostart: 1 })
+  db.deleteSession(doomed.id)
+  assert(db.listTunnels(doomed.id).length === 0, 'туннели удалённой сессии удалены')
+  console.log('OK delete-cascade')
+
+  // 13. Имена файлов от сервера не выводят скачивание за пределы папки назначения
+  const sftp = await import('../electron/main/ssh/sftp-manager')
+  for (const bad of ['..', '.', '', '../x', '..\\..\\evil.exe', 'a/b', 'nul\0x']) {
+    let threw = false
+    try { sftp.assertSafeRemoteName(bad) } catch { threw = true }
+    assert(threw, `имя «${bad}» отклонено`)
+  }
+  assert(sftp.assertSafeRemoteName('normal.tar.gz') === 'normal.tar.gz', 'обычное имя проходит')
+  assert(sftp.assertSafeRemoteName('..hidden') === '..hidden', 'имя, начинающееся с двух точек, проходит')
+  console.log('OK remote-name-guard')
+
   console.log('SSH_SMOKE_OK')
 }
 

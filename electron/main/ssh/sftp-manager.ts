@@ -7,21 +7,33 @@ import { getClient } from './connection-manager'
 import type { FileEntry, TransferInfo } from '@shared/types'
 
 const sftpMap = new Map<string, SFTPWrapper>()
+/** Открывающиеся каналы: параллельные запросы ждут один канал, а не открывают по своему. */
+const sftpOpening = new Map<string, Promise<SFTPWrapper>>()
 
 export async function getSftp(termId: string): Promise<SFTPWrapper> {
   const existing = sftpMap.get(termId)
   if (existing) return existing
+  const opening = sftpOpening.get(termId)
+  if (opening) return opening
   const client = getClient(termId)
   if (!client) throw new Error('SSH-подключение не активно')
-  const sftp = await new Promise<SFTPWrapper>((resolve, reject) =>
+  const promise = new Promise<SFTPWrapper>((resolve, reject) =>
     client.sftp((err, s) => (err ? reject(err) : resolve(s)))
   )
-  // удаляем по значению: после moveSftpToTerm канал живёт под другим termId
-  sftp.on('close', () => {
-    for (const [key, value] of sftpMap) if (value === sftp) sftpMap.delete(key)
-  })
-  sftpMap.set(termId, sftp)
-  return sftp
+  sftpOpening.set(termId, promise)
+  try {
+    const sftp = await promise
+    // Без слушателя фатальная ошибка протокола SFTP роняла бы main-процесс
+    sftp.on('error', () => undefined)
+    // удаляем по значению: после moveSftpToTerm канал живёт под другим termId
+    sftp.on('close', () => {
+      for (const [key, value] of sftpMap) if (value === sftp) sftpMap.delete(key)
+    })
+    sftpMap.set(termId, sftp)
+    return sftp
+  } finally {
+    sftpOpening.delete(termId)
+  }
 }
 
 /** split view: соединение перешло к другой панели — SFTP-канал и очередь передач тоже. */
@@ -155,9 +167,10 @@ export async function sftpReadFile(
   path: string
 ): Promise<{ base64: string; size: number; truncated: boolean }> {
   const sftp = await getSftp(termId)
-  const stat = await new Promise<{ size: number }>((resolve, reject) =>
-    sftp.stat(path, (err, s) => (err ? reject(err) : resolve(s)))
-  )
+  const stat = await statRemote(sftp, path)
+  // /dev/zero, /dev/urandom, FIFO и т.п.: размер 0, а чтение до EOF не кончается никогда —
+  // readFile копил бы данные, пока main-процесс не упадёт по памяти
+  if ((stat.mode & S_IFMT) !== S_IFREG) throw new Error('Это не обычный файл — предпросмотр недоступен')
   if (stat.size > PREVIEW_LIMIT) {
     // читаем только начало для hex-превью больших файлов
     const buf = await readPartial(sftp, path, 64 * 1024)
@@ -184,11 +197,38 @@ function readPartial(sftp: SFTPWrapper, path: string, bytes: number): Promise<Bu
   })
 }
 
-export async function sftpWriteFile(termId: string, path: string, base64: string): Promise<void> {
+export async function sftpWriteFile(
+  termId: string,
+  path: string,
+  base64: string,
+  mode?: number
+): Promise<void> {
   const sftp = await getSftp(termId)
   await new Promise<void>((resolve, reject) =>
-    sftp.writeFile(path, Buffer.from(base64, 'base64'), (err) => (err ? reject(err) : resolve()))
+    sftp.writeFile(
+      path,
+      Buffer.from(base64, 'base64'),
+      mode === undefined ? {} : { mode },
+      (err) => (err ? reject(err) : resolve())
+    )
   )
+}
+
+/**
+ * Имя файла пришло от сервера и станет частью локального пути. Злонамеренный сервер может
+ * вернуть «..», «../x» или «..\x» (на Linux обратная косая — обычный символ имени, а на Windows —
+ * разделитель) и записать файл вне выбранной папки — класс CVE-2019-6111 (scp),
+ * CVE-2018-20684 (WinSCP). На Windows ещё «:» — альтернативный поток NTFS. Такие имена отклоняем.
+ */
+export function assertSafeRemoteName(name: string): string {
+  const bad =
+    !name ||
+    name === '.' ||
+    name === '..' ||
+    /[/\\\0]/.test(name) ||
+    (process.platform === 'win32' && /[<>:"|?*\x01-\x1f]/.test(name))
+  if (bad) throw new Error(`Небезопасное имя файла от сервера: «${name}» — скачивание остановлено`)
+  return name
 }
 
 // -------- transfers --------
@@ -331,7 +371,15 @@ async function pumpTransferQueue(termId: string): Promise<void> {
 function openTransferSftp(termId: string): Promise<SFTPWrapper> {
   const client = getClient(termId)
   if (!client) return Promise.reject(new Error('SSH-подключение не активно'))
-  return new Promise((resolve, reject) => client.sftp((error, sftp) => error ? reject(error) : resolve(sftp)))
+  return new Promise((resolve, reject) =>
+    client.sftp((error, sftp) => {
+      if (error) return reject(error)
+      // Ошибку канала передача и так получит через колбэки операций; без слушателя
+      // событие 'error' стало бы необработанным исключением в main-процессе
+      sftp.on('error', () => undefined)
+      resolve(sftp)
+    })
+  )
 }
 
 function finishTransfer(t: ActiveTransfer, status: TransferInfo['status'], error?: string): void {
@@ -842,6 +890,8 @@ async function walkRemote(
     visited.add(real)
     const entries = await readdir(sftp, dir)
     for (const e of entries) {
+      // rel станет частью локального пути — posix.join с «..» вывел бы его за папку назначения
+      assertSafeRemoteName(e.filename)
       const abs = posix.join(dir, e.filename)
       const relPath = rel ? posix.join(rel, e.filename) : e.filename
       let fmt = e.attrs.mode & S_IFMT
@@ -875,7 +925,7 @@ export async function download(
 ): Promise<void> {
   await getSftp(termId)
   for (const item of items) {
-    const name = posix.basename(item.path)
+    const name = assertSafeRemoteName(posix.basename(item.path))
     const d: Descriptor = {
       termId,
       direction: 'download',

@@ -216,6 +216,9 @@ function profileFromSession(sessionId: string, visited: Set<string> = new Set())
   }
   // ProxyJump через сессию-бастион (поддерживается цепочка, с защитой от циклов)
   if (row.jump_session_id && row.jump_session_id !== sessionId) {
+    if (!getSessionRow(row.jump_session_id)) {
+      throw new Error(`Бастион сессии «${row.name || row.host}» удалён — выберите другой в настройках сессии`)
+    }
     profile.jump = profileFromSession(row.jump_session_id, visited)
   }
   return profile
@@ -577,7 +580,9 @@ export function registerIpc(): void {
     // построчной вставки (не ломается на sudo/heredoc, ловится exit-код).
     const path = `/tmp/litessh-${randomUUID().slice(0, 8)}.sh`
     return guard(async () => {
-      await sftpWriteFile(String(termId), path, Buffer.from(String(body), 'utf8').toString('base64'))
+      // 0600: в /tmp файл с правами по умолчанию (0644) читают все пользователя сервера,
+      // а в скриптах бывают пароли и ключи (VPN, provisioning)
+      await sftpWriteFile(String(termId), path, Buffer.from(String(body), 'utf8').toString('base64'), 0o600)
       return { path }
     })
   })

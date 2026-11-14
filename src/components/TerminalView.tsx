@@ -87,7 +87,12 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
     term.loadAddon(new WebLinksAddon((_e, uri) => window.api.openExternal(uri)))
     term.open(el)
     try {
-      term.loadAddon(new WebglAddon())
+      const webgl = new WebglAddon()
+      // Контекст WebGL теряется при сбросе GPU, выходе из сна и когда открыто больше ~16
+      // терминалов (Chromium гасит самые старые). Без обработки терминал оставался чёрным;
+      // dispose возвращает его на DOM-рендерер (рекомендация xterm.js).
+      webgl.onContextLoss(() => webgl.dispose())
+      term.loadAddon(webgl)
     } catch {
       /* canvas fallback */
     }
@@ -99,12 +104,25 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
       if (sel) void navigator.clipboard.writeText(sel)
     }
     // term.paste() учитывает bracketed paste (многострочный текст не выполняется сразу)
-    // и проходит через onData — значит, попадает во все панели при синхронном вводе
+    // и проходит через onData — значит, попадает во все панели при синхронном вводе.
+    // xterm 5.5 не чистит вставляемый текст: «ESC[201~» в буфере обмена досрочно закрывал
+    // bracketed paste, и следующая за ним строка выполнялась сразу (paste injection).
+    // eslint-disable-next-line no-control-regex
+    const safePaste = (text: string) => term.paste(text.replace(/\x1b\[20[01]~/g, ''))
     const paste = () => {
       void navigator.clipboard.readText().then((text) => {
-        if (text) term.paste(text)
+        if (text) safePaste(text)
       })
     }
+    // Прочие пути вставки (Shift+Insert, контекстное меню) идут через DOM-событие paste —
+    // перехватываем его до xterm, чтобы и они проходили очистку
+    const onDomPaste = (ev: ClipboardEvent) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      const text = ev.clipboardData?.getData('text/plain')
+      if (text) safePaste(text)
+    }
+    el.addEventListener('paste', onDomPaste, true)
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
@@ -113,7 +131,10 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
         copySelection()
         return false
       }
+      // preventDefault: xterm не отменяет событие при return false, и следом могла пройти
+      // ещё и нативная вставка браузера — текст вставился бы дважды
       if (mod && e.shiftKey && e.code === 'KeyV') {
+        e.preventDefault()
         paste()
         return false
       }
@@ -123,6 +144,7 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
         return false
       }
       if (mod && !e.shiftKey && e.code === 'KeyV') {
+        e.preventDefault()
         paste()
         return false
       }
@@ -200,6 +222,7 @@ export function TerminalView({ termId, active, kind = 'ssh', syncInput = false, 
 
     return () => {
       ro.disconnect()
+      el.removeEventListener('paste', onDomPaste, true)
       offData()
       offExit()
       term.dispose()

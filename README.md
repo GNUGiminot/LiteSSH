@@ -9,7 +9,7 @@
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Версия **1.1.7** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
+Версия **1.1.8** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
 
 <img width="1141" height="794" alt="image" src="https://github.com/user-attachments/assets/7ef0eeac-9fb6-46b5-9e71-93a28ecb3e21" />
 <img width="374" height="665" alt="image" src="https://github.com/user-attachments/assets/a15669a1-8ded-4410-a4bc-2b382045a355" />
@@ -109,9 +109,10 @@ npx electron .       # запуск собранного приложения
 npm run dist         # установщик → release/LiteSSH-<версия>-setup.exe
 ```
 
-Готовый установщик Windows: **`release/LiteSSH-1.1.7-setup.exe`** (NSIS, x64, с выбором папки установки).
+Готовый установщик Windows: **`release/LiteSSH-1.1.8-setup.exe`** (NSIS, x64, с выбором папки установки).
 Нативные модули (`better-sqlite3`, `node-pty`) распаковываются из asar (`asarUnpack`); пересборка при
-упаковке отключена (`npmRebuild: false`) — используются готовые prebuild-бинарники под ABI Electron.
+упаковке отключена (`npmRebuild: false`) — оба модуля поставляются с готовыми бинарниками на N-API,
+которые не зависят от версии Electron.
 
 **Обновление/переустановка без потери данных.** Настройки, история команд, сессии и ключи хранятся в
 `%APPDATA%\LiteSSH` (userData) — **отдельно от папки установки**, поэтому переустановка их не затрагивает.
@@ -125,14 +126,13 @@ GitHub Actions автоматически собирает Windows-устано�
 репозитория `WIN_CSC_LINK` (PFX/P12 либо base64) и `WIN_CSC_KEY_PASSWORD`; без них сборка останется
 неподписанной. Сертификат и пароль в репозиторий добавлять нельзя.
 
-**Примечание (Windows без VS Build Tools):** если `npm install` падает на компиляции `better-sqlite3` —
-поставьте зависимости без скриптов и подтяните готовый бинарник:
+**Примечание (Windows без VS Build Tools):** если `npm install` падает на пересборке нативных модулей —
+поставьте зависимости без скриптов и отдельно скачайте бинарник Electron (готовые бинарники
+`better-sqlite3` и `node-pty` уже лежат в пакетах):
 
 ```powershell
 npm install --ignore-scripts --legacy-peer-deps
 node node_modules/electron/install.js
-cd node_modules/better-sqlite3
-npx prebuild-install --runtime=electron --target=<версия electron> --arch=x64
 ```
 
 ## Архитектура (кратко)
@@ -186,7 +186,7 @@ but minimalistic, modern, and without the bloat.
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Version **1.0.1** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
+Version **1.1.8** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
 
 </div>
 
@@ -251,10 +251,11 @@ npm run dev          # development with HMR
 npm run build        # production build to out/
 npx electron .       # run the built app
 npm run dist         # installer → release/LiteSSH-<version>-setup.exe
+```
 
-Windows installer: release/LiteSSH-1.0.1-setup.exe (NSIS, x64, with installation directory selection).
+Windows installer: `release/LiteSSH-1.1.8-setup.exe` (NSIS, x64, with installation directory selection).
 Native modules (better-sqlite3, node-pty) are unpacked from asar (asarUnpack); rebuild during packaging
-is disabled (npmRebuild: false) — using prebuilt binaries for Electron's ABI.
+is disabled (npmRebuild: false) — both modules ship prebuilt N-API binaries that do not depend on the Electron version.
 
 Update/reinstall without data loss. Settings, command history, sessions, and keys are stored in
 %APPDATA%\LiteSSH (userData) — separate from the installation folder, so reinstallation does not affect them.
@@ -263,14 +264,15 @@ and an update is performed (custom build/installer.nsh, deleteAppDataOnUninstall
 on first launch of a new version, the app creates a database backup in %APPDATA%\LiteSSH\backups
 (keeps the last 5) — in case of a failed migration.
 
-Note (Windows without VS Build Tools): if npm install fails on better-sqlite3 compilation —
-install dependencies without scripts and pull the prebuilt binary:
+Note (Windows without VS Build Tools): if npm install fails while rebuilding native modules —
+install dependencies without scripts and download the Electron binary separately
+(better-sqlite3 and node-pty already ship prebuilt binaries):
 
-powershell
+```powershell
 npm install --ignore-scripts --legacy-peer-deps
 node node_modules/electron/install.js
-cd node_modules/better-sqlite3
-npx prebuild-install --runtime=electron --target=<electron version> --arch=x64
+```
+
 Architecture (Brief)
 All SSH and secrets live only in the main process; renderer is pure UI over typed IPC (contextIsolation
 
