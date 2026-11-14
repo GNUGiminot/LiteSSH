@@ -9,7 +9,7 @@
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Версия **1.1.8** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
+Версия **1.1.9** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
 
 <img width="1141" height="794" alt="image" src="https://github.com/user-attachments/assets/7ef0eeac-9fb6-46b5-9e71-93a28ecb3e21" />
 <img width="374" height="665" alt="image" src="https://github.com/user-attachments/assets/a15669a1-8ded-4410-a4bc-2b382045a355" />
@@ -109,7 +109,7 @@ npx electron .       # запуск собранного приложения
 npm run dist         # установщик → release/LiteSSH-<версия>-setup.exe
 ```
 
-Готовый установщик Windows: **`release/LiteSSH-1.1.8-setup.exe`** (NSIS, x64, с выбором папки установки).
+Готовый установщик Windows: **`release/LiteSSH-1.1.9-setup.exe`** (NSIS, x64, с выбором папки установки).
 Нативные модули (`better-sqlite3`, `node-pty`) распаковываются из asar (`asarUnpack`); пересборка при
 упаковке отключена (`npmRebuild: false`) — оба модуля поставляются с готовыми бинарниками на N-API,
 которые не зависят от версии Electron.
@@ -186,7 +186,7 @@ but minimalistic, modern, and without the bloat.
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Version **1.1.8** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
+Version **1.1.9** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
 
 </div>
 
@@ -253,7 +253,7 @@ npx electron .       # run the built app
 npm run dist         # installer → release/LiteSSH-<version>-setup.exe
 ```
 
-Windows installer: `release/LiteSSH-1.1.8-setup.exe` (NSIS, x64, with installation directory selection).
+Windows installer: `release/LiteSSH-1.1.9-setup.exe` (NSIS, x64, with installation directory selection).
 Native modules (better-sqlite3, node-pty) are unpacked from asar (asarUnpack); rebuild during packaging
 is disabled (npmRebuild: false) — both modules ship prebuilt N-API binaries that do not depend on the Electron version.
 

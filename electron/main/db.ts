@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { dirname, join } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, appendFileSync } from 'fs'
 import type { SessionProfile } from '@shared/types'
 import { encryptSecret } from './vault'
 
@@ -26,10 +26,12 @@ function backupOnVersionChange(database: Database.Database, dbPath: string): voi
       const dir = join(app.getPath('userData'), 'backups')
       mkdirSync(dir, { recursive: true })
       copyFileSync(dbPath, join(dir, `litessh-${prev}-${Date.now()}.db`))
-      // оставляем максимум 5 последних бэкапов
+      // оставляем максимум 5 последних бэкапов. Сортируем по метке времени в имени, а не по
+      // строке: строкой «litessh-1.1.10-…» < «litessh-1.1.2-…» — удалялись бы самые свежие копии
+      const stamp = (f: string) => Number(/-(\d+)\.db$/.exec(f)?.[1] ?? 0)
       const files = readdirSync(dir)
         .filter((f) => f.startsWith('litessh-') && f.endsWith('.db'))
-        .sort()
+        .sort((a, b) => stamp(a) - stamp(b))
       for (const f of files.slice(0, Math.max(0, files.length - 5))) {
         try {
           rmSync(join(dir, f))
@@ -43,6 +45,46 @@ function backupOnVersionChange(database: Database.Database, dbPath: string): voi
       .run(cur)
   } catch {
     /* бэкап — лучшее усилие, не мешаем запуску */
+  }
+}
+
+function logDb(message: string): void {
+  try {
+    const dir = join(app.getPath('userData'), 'logs')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'db.log'), `${new Date().toISOString()}\t${message}\n`, 'utf8')
+  } catch {
+    /* журнал — лучшее усилие */
+  }
+}
+
+/**
+ * Проверка целостности при запуске. Рассинхрон индекса с таблицей (встречался у первичного
+ * ключа sessions) делает записи невидимыми для поиска по id: сессия есть в списке, но
+ * подключение, правка и удаление отвечают «Сессия не найдена». Если ошибки только в индексах,
+ * чиним REINDEX — он перестраивает индексы из таблиц и данные не меняет. Перед починкой
+ * кладём копию файла в backups/ (префикс repair-, ротация бэкапов версий её не трогает).
+ * Повреждения самих таблиц не трогаем — там нужна ручная проверка; только пишем в logs/db.log.
+ */
+export function repairIndexesIfNeeded(database: Database.Database, dbPath: string): 'ok' | 'repaired' | 'failed' {
+  try {
+    const problems = (database.pragma('integrity_check(50)') as { integrity_check: string }[]).map(
+      (r) => r.integrity_check
+    )
+    if (problems.length === 1 && problems[0] === 'ok') return 'ok'
+    logDb(`integrity_check: ${problems.join(' | ')}`)
+    if (!problems.every((p) => /\b(in|from) index\b/.test(p))) return 'failed'
+    database.pragma('wal_checkpoint(TRUNCATE)')
+    const dir = join(app.getPath('userData'), 'backups')
+    mkdirSync(dir, { recursive: true })
+    copyFileSync(dbPath, join(dir, `repair-${Date.now()}-litessh.db`))
+    database.exec('REINDEX')
+    const after = database.pragma('integrity_check', { simple: true })
+    logDb(`REINDEX → ${after}`)
+    return after === 'ok' ? 'repaired' : 'failed'
+  } catch (e) {
+    logDb(`integrity repair error: ${(e as Error).message}`)
+    return 'failed'
   }
 }
 
@@ -62,7 +104,10 @@ export function getDb(): Database.Database {
     } catch {
       /* при первом создании WAL ещё нет — не критично */
     }
-    if (existed) backupOnVersionChange(db, dbPath)
+    if (existed) {
+      backupOnVersionChange(db, dbPath)
+      repairIndexesIfNeeded(db, dbPath)
+    }
     db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,

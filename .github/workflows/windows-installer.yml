@@ -28,7 +28,10 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # better-sqlite3 и node-pty поставляются с готовыми N-API-бинарниками, а сборка идёт
+        # с npmRebuild:false. Пересборка в postinstall (electron-builder install-app-deps)
+        # на раннере падала: node-gyp не находил Visual Studio.
+        run: npm ci --ignore-scripts
 
       - name: Build Windows installer
         run: npm run dist
