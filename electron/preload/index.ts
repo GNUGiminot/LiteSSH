@@ -111,6 +111,18 @@ const api: LiteSSHApi = {
   rdp: {
     open: (termId, dstHost, dstPort) => ipcRenderer.invoke('rdp:open', termId, dstHost, dstPort)
   },
+  firewall: {
+    probe: (termId) => ipcRenderer.invoke('firewall:probe', termId),
+    install: (termId, source, password) => ipcRenderer.invoke('firewall:install', termId, source, password),
+    connect: (termId, password) => ipcRenderer.invoke('firewall:connect', termId, password),
+    state: (termId) => ipcRenderer.invoke('firewall:state', termId),
+    job: (termId) => ipcRenderer.invoke('firewall:job', termId),
+    action: (termId, action) => ipcRenderer.invoke('firewall:action', termId, action),
+    panel: (termId, title) => ipcRenderer.invoke('firewall:panel', termId, title),
+    confirm: (termId, code, sshPort, password) =>
+      ipcRenderer.invoke('firewall:confirm', termId, code, sshPort, password),
+    disableWeb: (termId, password) => ipcRenderer.invoke('firewall:disable-web', termId, password)
+  },
   pty: {
     spawn: (shell, size): Promise<ConnectResult> => ipcRenderer.invoke('pty:spawn', shell, size),
     write: (ptyId, data) => ipcRenderer.send('pty:write', ptyId, data),

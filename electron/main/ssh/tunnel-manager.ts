@@ -25,6 +25,8 @@ interface ActiveTunnel {
   bytesOut: number
   conns: number
   error?: string
+  /** Последний отказ отдельного соединения (канал не открылся, цель недоступна) — туннель при этом слушает */
+  lastError?: string
 }
 
 const active = new Map<string, ActiveTunnel>() // tunnelId -> tunnel
@@ -40,6 +42,7 @@ function toState(t: ActiveTunnel): TunnelState {
     dstPort: t.row.dst_port,
     running: !t.error,
     error: t.error,
+    lastError: t.lastError,
     conns: t.conns,
     bytesIn: t.bytesIn,
     bytesOut: t.bytesOut
@@ -187,6 +190,8 @@ export function startTunnel(termId: string, tunnelId: string): { ok: boolean; er
         const current = getClient(t.termId) ?? client
         current.forwardOut(socket.remoteAddress ?? '127.0.0.1', socket.remotePort ?? 0, host, port, (err, stream) => {
           if (err) {
+            t.lastError = `${host}:${port} — ${err.message}`
+            broadcast()
             // Клиент SOCKS должен узнать о неудаче, а не получить «успех» и обрыв
             if (socks && !socket.destroyed) socket.end(socksReply(SOCKS_REPLY_HOST_UNREACHABLE))
             else socket.destroy()
@@ -198,6 +203,7 @@ export function startTunnel(termId: string, tunnelId: string): { ok: boolean; er
             stream.close()
             return
           }
+          t.lastError = undefined
           if (socks) socket.write(socksReply(SOCKS_REPLY_OK))
           pipeThrough(t, socket, stream)
           socket.resume()
@@ -234,7 +240,13 @@ export function startTunnel(termId: string, tunnelId: string): { ok: boolean; er
     const listener: TcpConnListener = (info, accept) => {
       if (info.destPort !== row.src_port) return
       const stream = accept()
+      const dst = `${row.dst_host || '127.0.0.1'}:${row.dst_port}`
       const local = netConnect(row.dst_port, row.dst_host || '127.0.0.1')
+      local.once('connect', () => (t.lastError = undefined))
+      local.once('error', (e) => {
+        t.lastError = `${dst} — ${e.message}`
+        broadcast()
+      })
       pipeThrough(t, local, stream)
     }
     t.tcpListener = listener

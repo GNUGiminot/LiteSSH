@@ -16,6 +16,7 @@ import {
   Rows2,
   ScrollText,
   Settings2,
+  Shield,
   ShieldCheck,
   SplitSquareHorizontal,
   SquarePlus,
@@ -38,6 +39,7 @@ import { PasswordPromptDialog } from '@/components/PasswordPromptDialog'
 import { TextPromptDialog } from '@/components/TextPromptDialog'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ContextMenu } from '@/components/ContextMenu'
+import { UI_THEMES, applyUiPalette } from '@/lib/uiThemes'
 import { KeysDialog } from '@/components/KeysDialog'
 import { PreviewDialog } from '@/components/PreviewDialog'
 import { SettingsDialog } from '@/components/SettingsDialog'
@@ -45,6 +47,7 @@ import { SnippetsPalette } from '@/components/SnippetsPalette'
 import { TunnelsDialog } from '@/components/TunnelsDialog'
 import { KnownHostsDialog } from '@/components/KnownHostsDialog'
 import { MetricsDialog } from '@/components/MetricsDialog'
+import { FirewallDialog } from '@/components/FirewallDialog'
 import { ScriptsDialog } from '@/components/ScriptsDialog'
 import { LocalShellMenu } from '@/components/LocalShellMenu'
 import { McpAccessDialog } from '@/components/McpAccessDialog'
@@ -90,6 +93,7 @@ export default function App() {
   const [tunnelsOpen, setTunnelsOpen] = useState(false)
   const [knownHostsOpen, setKnownHostsOpen] = useState(false)
   const [metricsOpen, setMetricsOpen] = useState(false)
+  const [firewallOpen, setFirewallOpen] = useState(false)
   const [scriptsOpen, setScriptsOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
   const [mcpActivityOpen, setMcpActivityOpen] = useState(false)
@@ -98,7 +102,12 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [editing, setEditing] = useState<SessionProfile | null>(null)
   const [logging, setLogging] = useState(false)
-  const accent = useSettings((s) => s.accent)
+  const uiTheme = useSettings((s) => s.uiTheme)
+  const palette = UI_THEMES[uiTheme]
+  const userAccent = useSettings((s) => s.accent)
+  const accent = palette?.accent ?? userAccent
+  // У палитры свой режим: светлая или тёмная, переключатель в шапке не нужен
+  const effectiveDark = palette ? palette.dark : dark
 
   const activeTab = tabs.find((t) => t.termId === activeId)
 
@@ -303,10 +312,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', dark)
+    document.documentElement.classList.toggle('dark', effectiveDark)
     localStorage.setItem('theme', dark ? 'dark' : 'light')
-    window.api.setTitlebarTheme(dark)
-  }, [dark])
+    window.api.setTitlebarTheme(effectiveDark)
+    applyUiPalette(palette)
+  }, [dark, effectiveDark, palette])
 
   const openEditor = (session: SessionProfile | null) => {
     setEditing(session)
@@ -418,6 +428,13 @@ export default function App() {
             >
               <MonitorUp size={16} />
             </button>
+            <button
+              title="Сетевой экран сервера (VPSWall): порты, правила, полная панель"
+              onClick={() => setFirewallOpen(true)}
+              className={headerBtn}
+            >
+              <Shield size={16} />
+            </button>
             <div className="mx-0.5 h-5 w-px bg-surface-3" />
             <button
               title="Разделить панель (ещё один shell на этом соединении)"
@@ -479,9 +496,11 @@ export default function App() {
         <button title="Настройки" onClick={() => setSettingsOpen(true)} className={headerBtn}>
           <Settings2 size={16} />
         </button>
-        <button title="Переключить тему" onClick={() => setDark((d) => !d)} className={headerBtn}>
-          {dark ? <Sun size={16} /> : <Moon size={16} />}
-        </button>
+        {!palette && (
+          <button title="Переключить тему" onClick={() => setDark((d) => !d)} className={headerBtn}>
+            {dark ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+        )}
       </header>
 
       <div className="flex min-h-0 flex-1">
@@ -580,6 +599,12 @@ export default function App() {
         termId={activeTab?.kind === 'ssh' ? activeTab.termId : null}
         title={activeTab?.title ?? ''}
         onClose={() => setMetricsOpen(false)}
+      />
+      <FirewallDialog
+        open={firewallOpen}
+        termId={activeTab?.kind === 'ssh' ? activeTab.termId : null}
+        title={activeTab?.title ?? ''}
+        onClose={() => setFirewallOpen(false)}
       />
       <SnippetsPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <PreviewDialog />

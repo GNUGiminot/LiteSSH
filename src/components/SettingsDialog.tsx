@@ -5,6 +5,7 @@ import { useSettings } from '@/stores/useSettings'
 import { useVault } from '@/stores/useVault'
 import { useToasts } from '@/stores/useToasts'
 import { TERM_THEMES } from '@/lib/termThemes'
+import { UI_THEMES } from '@/lib/uiThemes'
 import { KeybindingsSection } from './KeybindingsSection'
 
 interface Props {
@@ -107,7 +108,32 @@ export function SettingsDialog({ open, onClose }: Props) {
             </div>
 
             <div>
-              <label className={label}>Акцентный цвет</label>
+              <label className={label}>Тема интерфейса</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[['default', null] as const, ...Object.entries(UI_THEMES)].map(([key, p]) => (
+                  <button
+                    key={key}
+                    onClick={() => s.setUiTheme(key)}
+                    title={p ? (p.dark ? 'Тёмная' : 'Светлая') : 'Светлая или тёмная — кнопкой в шапке'}
+                    style={p ? { background: p.card, color: p.text, borderColor: p.line } : undefined}
+                    className={`flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11px] ${
+                      p ? '' : 'border-surface-3 bg-surface-0 text-content-1'
+                    } ${s.uiTheme === key ? 'ring-2 ring-accent' : ''}`}
+                  >
+                    <span
+                      className="h-3 w-3 shrink-0 rounded-full"
+                      style={{ background: p ? p.accent : s.accent }}
+                    />
+                    <span className="truncate">{p ? p.label : 'Стандартная'}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className={UI_THEMES[s.uiTheme] ? 'pointer-events-none opacity-50' : ''}>
+              <label className={label}>
+                Акцентный цвет{UI_THEMES[s.uiTheme] ? ' — задан темой' : ''}
+              </label>
               <div className="flex items-center gap-2">
                 {ACCENT_PRESETS.map((c) => (
                   <button

@@ -83,6 +83,7 @@ import {
 import { spawn } from 'child_process'
 import { onTermClosed, onTermMoved, startLogging, stopLogging, isLogging } from './ssh/connection-manager'
 import { getHostMetrics } from './metrics'
+import { registerFirewallIpc, rememberProfile, copyProfile } from './firewall'
 import {
   spawnPty,
   writePty,
@@ -257,6 +258,7 @@ async function guard<T extends Record<string, unknown> | void>(
 }
 
 export function registerIpc(): void {
+  registerFirewallIpc()
   // остановка туннелей при закрытии несущей SSH-сессии
   onTermClosed((termId) => {
     stopTunnelsForTerm(termId)
@@ -341,6 +343,7 @@ export function registerIpc(): void {
       }
       const size = req.size ?? { cols: 80, rows: 24 }
       const { termId, title } = await connect(win, profile, size, req.attemptId)
+      rememberProfile(termId, profile)
       if (req.sessionId) {
         touchSession(req.sessionId)
         autostartTunnels(termId, req.sessionId)
@@ -354,6 +357,7 @@ export function registerIpc(): void {
   ipcMain.handle('ssh:split', async (_e, sourceTermId: string): Promise<ConnectResult> => {
     try {
       const { termId } = await openExtraShell(String(sourceTermId), { cols: 100, rows: 30 })
+      copyProfile(String(sourceTermId), termId)
       return { ok: true, termId }
     } catch (e) {
       return { ok: false, error: (e as Error).message }

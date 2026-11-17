@@ -270,12 +270,15 @@ export function SessionDialog({ open, session, onClose }: Props) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className={label}>Порт</label>
+                <label className={label}>Порт SSH</label>
                 <input
                   className={field}
                   type="number"
+                  min={1}
+                  max={65535}
                   value={form.port}
                   onChange={(e) => set({ port: Number(e.target.value) })}
+                  title="Порт sshd на этом сервере; если его перенесли со стандартного 22 — укажите новый"
                 />
               </div>
               <div>
@@ -302,7 +305,7 @@ export function SessionDialog({ open, session, onClose }: Props) {
               />
             </div>
             <div className="col-span-2">
-              <label className={label}>Бастион / ProxyJump (опционально)</label>
+              <label className={label}>Подключаться через (бастион / ProxyJump, как ssh -J)</label>
               <select
                 className={field}
                 value={form.jumpSessionId}
@@ -313,10 +316,17 @@ export function SessionDialog({ open, session, onClose }: Props) {
                   .filter((s) => s.id !== form.id)
                   .map((s) => (
                     <option key={s.id} value={s.id}>
-                      через {s.name} ({s.username}@{s.host})
+                      через {s.name} ({s.username}@{s.host}
+                      {s.port !== 22 ? `:${s.port}` : ''})
                     </option>
                   ))}
               </select>
+              {form.jumpSessionId && (
+                <p className="mt-1 text-[10px] text-content-3">
+                  Сначала входим на выбранную сессию, с неё открываем канал к {form.host || 'хосту'}:
+                  {Number(form.port) || 22}. Хост и порт выше — так, как их видит промежуточный сервер.
+                </p>
+              )}
             </div>
             <div className="col-span-2">
               <label className="flex cursor-pointer items-center gap-2 text-xs text-content-1">

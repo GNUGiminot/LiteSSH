@@ -71,6 +71,8 @@ export interface TunnelState {
   dstPort: number
   running: boolean
   error?: string
+  /** Последний отказ отдельного соединения через работающий туннель */
+  lastError?: string
   conns: number
   bytesIn: number
   bytesOut: number
@@ -347,6 +349,98 @@ export interface OpResult {
   [k: string]: unknown
 }
 
+// ---- Сетевой экран (VPSWall на сервере сессии) ----
+
+export interface FirewallProbe {
+  installed: boolean
+  version?: string
+  bin?: string
+  /** amd64 / arm64, если архитектура поддерживается VPSWall */
+  arch?: string
+  machine?: string
+  linux: boolean
+  systemd: boolean
+  /** root — вход под root; sudo — sudo без пароля; sudo-password — sudo спросит пароль */
+  privilege?: 'root' | 'sudo' | 'sudo-password'
+  canRoot: boolean
+}
+
+export interface FirewallResult extends OpResult {
+  /** sudo требует пароль (или введён неверный) — спросить и повторить */
+  needPassword?: boolean
+}
+
+/** Операции VPSWall API, доступные из упрощённого вида «Порты». */
+export interface FirewallAction {
+  op: 'rule-save' | 'rule-delete' | 'window-add' | 'window-pause' | 'window-delete' | 'rollback'
+  revision?: string
+  id?: string
+  action?: 'allow' | 'deny' | 'reject'
+  protocol?: string
+  port?: string
+  source?: string
+  comment?: string
+  priority?: number
+  kind?: 'lease' | 'daily' | 'once'
+  clock?: string
+  zone?: string
+  duration?: string
+  start?: string
+}
+
+export interface FirewallRule {
+  id: string
+  action: 'allow' | 'deny' | 'reject'
+  protocol: string
+  port: string
+  source: string
+  comment: string
+  priority: number
+  auto_ssh?: boolean
+  temporary?: boolean
+}
+
+export interface FirewallWindow {
+  id: string
+  rule: FirewallRule
+  kind: 'lease' | 'daily' | 'once'
+  start?: string
+  clock?: string
+  zone?: string
+  seconds: number
+  paused?: boolean
+  active: boolean
+  end: string
+  next: string
+}
+
+export interface FirewallPending {
+  token: string
+  deadline: string
+  description: string
+  ssh_port?: string
+}
+
+export interface FirewallState {
+  config: { backend: string; zone: string; enabled: boolean; policy: string; rules: FirewallRule[] | null }
+  revision: string
+  windows: FirewallWindow[]
+  pending: FirewallPending | null
+  demo: boolean
+  host: string
+  version: string
+  ssh_port: string
+  now: string
+}
+
+export interface FirewallJob {
+  id: string
+  running: boolean
+  message: string
+  error?: string
+  pending?: FirewallPending
+}
+
 export interface LiteSSHApi {
   platform: string
   sessions: {
@@ -453,6 +547,21 @@ export interface LiteSSHApi {
     cancel(id: string): void
     resume(id: string): Promise<OpResult>
     onUpdate(cb: (info: TransferInfo) => void): () => void
+  }
+  firewall: {
+    probe(termId: string): Promise<FirewallResult & { probe?: FirewallProbe }>
+    /** Установить VPSWall: релиз с GitHub (с проверкой SHA-256) или zip с диска */
+    install(termId: string, source: 'github' | 'file', password?: string): Promise<FirewallResult & { message?: string; canceled?: boolean }>
+    /** Включить веб-службу, выдать токен и поднять туннель */
+    connect(termId: string, password?: string): Promise<FirewallResult & { port?: number }>
+    state(termId: string): Promise<FirewallResult & { state?: FirewallState }>
+    job(termId: string): Promise<FirewallResult & { job?: FirewallJob }>
+    action(termId: string, action: FirewallAction): Promise<FirewallResult & { job?: FirewallJob }>
+    /** Открыть полную веб-панель VPSWall в отдельном окне */
+    panel(termId: string, title: string): Promise<FirewallResult>
+    /** Подтвердить изменение из нового SSH-подключения */
+    confirm(termId: string, code: string, sshPort?: string, password?: string): Promise<FirewallResult & { port?: number }>
+    disableWeb(termId: string, password?: string): Promise<FirewallResult>
   }
   mcp: {
     state(termId: string): Promise<McpBridgeState>
