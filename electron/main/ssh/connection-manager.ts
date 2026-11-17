@@ -309,6 +309,8 @@ export function execOnClientLimited(
     maxOutputBytes: number
     onStdout?: (chunk: string) => void
     onStderr?: (chunk: string) => void
+    /** Данные для stdin команды (например, пароль для sudo -S); после них stdin закрывается. */
+    input?: string
   }
 ): Promise<{ code: number; stdout: string; stderr: string; truncated: boolean }> {
   return new Promise((resolve, reject) => {
@@ -316,6 +318,7 @@ export function execOnClientLimited(
     if (!client) return reject(new Error('SSH-сессия не активна'))
     client.exec(command, (error, stream) => {
       if (error) return reject(error)
+      if (options.input !== undefined) stream.end(options.input)
       let settled = false
       let stdoutBytes = 0
       let stderrBytes = 0
@@ -372,7 +375,9 @@ export function execOnClientLimited(
 export async function execOnProfile(
   win: BrowserWindow,
   profile: ConnectProfile,
-  command: string
+  command: string,
+  /** Данные для stdin команды (пароль для sudo -S); после них stdin закрывается. */
+  input?: string
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const via = profile.jump
     ? await openViaJump(win, profile.jump, { host: profile.host, port: profile.port })
@@ -396,6 +401,7 @@ export async function execOnProfile(
       watchdog.clear()
       client.exec(command, (err, stream) => {
         if (err) return fail(err)
+        if (input !== undefined) stream.end(input)
         let stdout = ''
         let stderr = ''
         stream.on('data', (d: Buffer) => (stdout += d.toString()))

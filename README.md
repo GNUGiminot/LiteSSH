@@ -9,7 +9,7 @@
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Версия **1.1.9** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
+Версия **1.1.13** · Автор: **Krainevtech and AI Anthropic Claude** · Контакт: [Telegram @giminot](https://t.me/giminot) · Лицензия: **PolyForm Noncommercial 1.0.0**
 
 <img width="1141" height="794" alt="image" src="https://github.com/user-attachments/assets/7ef0eeac-9fb6-46b5-9e71-93a28ecb3e21" />
 <img width="374" height="665" alt="image" src="https://github.com/user-attachments/assets/a15669a1-8ded-4410-a4bc-2b382045a355" />
@@ -38,7 +38,7 @@
 - **Теги и поиск** по хостам (имя/хост/пользователь/группа/теги)
 - **Шаблоны**: новая сессия может скопировать настройки из существующей
 - Импорт из `~/.ssh/config`, экспорт/импорт в JSON
-- **ProxyJump / цепочки бастионов**: подключение через один или несколько промежуточных хостов
+- **ProxyJump / цепочки бастионов** (как `ssh -J`): в настройках сессии «Подключаться через» — выбрать сохранённую сессию-бастион; у бастиона, в свою очередь, может быть свой бастион. Порт SSH целевого сервера задаётся в той же форме (не обязательно 22). Туннели бастион не добавляют — они работают поверх уже открытой сессии
 - Проброс SSH-агента (ForwardAgent)
 
 ### Файлы (SFTP)
@@ -58,6 +58,7 @@
 - **Туннели**: local (`-L`), remote (`-R`), dynamic SOCKS5 (`-D`), автозапуск с сессией, мониторинг соединений и трафика
 - **Метрики хоста**: дашборд CPU / RAM / диск / load / аптайм (опрос раз в 2.5 с)
 - **Remote Desktop через SSH в один клик** (иконка монитора): поднимает эфемерный туннель на `:3389` сервера и запускает системный RDP-клиент (`mstsc.exe`) — картинку рисует ОС, трафик идёт зашифрованным внутри SSH. Встроенного RDP-рендерера нет намеренно (чтобы не раздувать «lite»-клиент)
+- **Сетевой экран** (иконка щита): встроенный [VPSWall](https://github.com/GNUGiminot/vpswall) сервера — проверка и установка по подтверждению (последний выпуск с GitHub со сверкой SHA-256 по его `SHA256SUMS.txt` или свой zip, по SFTP), вид «Порты» (открыть/закрыть порт, открыть временно), полная веб-панель VPSWall в отдельном окне через эфемерный туннель с подставленным токеном и подтверждение изменения из нового SSH-подключения. Сам firewall LiteSSH не трогает: все изменения — через VPSWall с его откатом через 120 с. Нужны Linux с systemd и root (напрямую, `sudo -n` или пароль sudo, который хранится только в памяти)
 - Журналирование сессии в файл (без ANSI-кодов)
 
 ### Удобство
@@ -68,7 +69,7 @@
 - **Файловый менеджер в стиле mc**: нижняя панель функциональных клавиш (F3 просмотр, F4 правка, F5 копирование, F7 папка, F8 удаление с подтверждением), действует над активной панелью
 - Настройки: 4 темы терминала, размер шрифта, акцентный цвет, горячие клавиши
 - Несколько окон (как вкладки в браузере), сворачивание в системный трей
-- Тёмная/светлая тема, системные уведомления
+- Тёмная/светлая тема и 8 палитр интерфейса (Пергамент, Мёд, Терракота, Шалфей, Чертёж, Сумерки, Мастерская, Ночная смена — «Настройки» → «Тема интерфейса»), системные уведомления
 
 ### Оформление
 - Кастомный титлбар (frameless + системные кнопки через `titleBarOverlay`), цвет — под тему
@@ -109,7 +110,7 @@ npx electron .       # запуск собранного приложения
 npm run dist         # установщик → release/LiteSSH-<версия>-setup.exe
 ```
 
-Готовый установщик Windows: **`release/LiteSSH-1.1.9-setup.exe`** (NSIS, x64, с выбором папки установки).
+Готовый установщик Windows: **`release/LiteSSH-1.1.13-setup.exe`** (NSIS, x64, с выбором папки установки).
 Нативные модули (`better-sqlite3`, `node-pty`) распаковываются из asar (`asarUnpack`); пересборка при
 упаковке отключена (`npmRebuild: false`) — оба модуля поставляются с готовыми бинарниками на N-API,
 которые не зависят от версии Electron.
@@ -186,7 +187,7 @@ but minimalistic, modern, and without the bloat.
 
 `Electron` · `React` · `TypeScript` · `xterm.js` · `ssh2` · `better-sqlite3` · `Tailwind` · `Radix UI`
 
-Version **1.1.9** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
+Version **1.1.13** · Author: **Krainevtech and AI** · Contact: [Telegram @giminot](https://t.me/giminot) · License: **PolyForm Noncommercial 1.0.0**
 
 </div>
 
@@ -209,7 +210,7 @@ Version **1.1.9** · Author: **Krainevtech and AI** · Contact: [Telegram @gimin
 - **Tags and search** by hostname (name/host/user/group/tags)
 - **Templates**: new session can copy settings from an existing one
 - Import from `~/.ssh/config`, export/import to JSON
-- **ProxyJump / bastion chains**: connect through one or multiple intermediate hosts
+- **ProxyJump / bastion chains** (like `ssh -J`): pick a saved session in "Connect via"; the bastion may have its own bastion. The target SSH port is set in the same form (not only 22)
 - SSH agent forwarding (ForwardAgent)
 
 ### Files (SFTP)
@@ -227,6 +228,7 @@ Version **1.1.9** · Author: **Krainevtech and AI** · Contact: [Telegram @gimin
 - **Tunnels**: local (`-L`), remote (`-R`), dynamic SOCKS5 (`-D`), auto-start with session, connection and traffic monitoring
 - **Host metrics**: dashboard for CPU / RAM / disk / load / uptime (polled every 2.5s)
 - **Remote Desktop via SSH in one click** (monitor icon): spawns an ephemeral tunnel to `:3389` on the server and launches the system RDP client (`mstsc.exe`) — rendering is handled by the OS, traffic flows encrypted inside SSH. No built-in RDP renderer by design (to keep the "lite" client lightweight)
+- **Firewall** (shield icon): built-in [VPSWall](https://github.com/GNUGiminot/vpswall) for the server — detection and install on confirmation (latest GitHub release verified against its `SHA256SUMS.txt`, or a local zip, via SFTP), a simple "Ports" view (open/close a port, open temporarily), the full VPSWall web panel in a separate window over an ephemeral tunnel with the token injected, and confirming a change from a new SSH connection. LiteSSH never edits the firewall itself: every change goes through VPSWall and its 120 s rollback. Requires Linux with systemd and root (direct, `sudo -n`, or a sudo password kept in memory only)
 - Session logging to file (without ANSI codes)
 
 ### Convenience
@@ -253,7 +255,7 @@ npx electron .       # run the built app
 npm run dist         # installer → release/LiteSSH-<version>-setup.exe
 ```
 
-Windows installer: `release/LiteSSH-1.1.9-setup.exe` (NSIS, x64, with installation directory selection).
+Windows installer: `release/LiteSSH-1.1.13-setup.exe` (NSIS, x64, with installation directory selection).
 Native modules (better-sqlite3, node-pty) are unpacked from asar (asarUnpack); rebuild during packaging
 is disabled (npmRebuild: false) — both modules ship prebuilt N-API binaries that do not depend on the Electron version.
 

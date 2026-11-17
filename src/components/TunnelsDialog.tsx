@@ -61,7 +61,11 @@ export function TunnelsDialog({ open, onClose }: Props) {
 
   const saveForm = async () => {
     if (!sessionId) return
-    await window.api.tunnels.save({ ...form, sessionId })
+    try {
+      await window.api.tunnels.save({ ...form, sessionId })
+    } catch (e) {
+      return push('error', `Туннель не сохранён: ${(e as Error).message}`)
+    }
     setAdding(false)
     setForm(EMPTY_FORM)
     await reload()
@@ -130,6 +134,11 @@ export function TunnelsDialog({ open, onClose }: Props) {
                               ? 'автозапуск'
                               : 'вручную'}
                         </div>
+                        {(st?.error || st?.lastError) && (
+                          <div className="break-all text-[10px] text-red-400">
+                            {st.error ?? `Соединение не открылось: ${st.lastError}`}
+                          </div>
+                        )}
                       </div>
                       {running ? (
                         <button
